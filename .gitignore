@@ -6,4 +6,5 @@ downloads/
 logs/
 .omc/
 repo_rules.json
+apple_rules.json
 .DS_Store

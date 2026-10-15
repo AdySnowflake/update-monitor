@@ -6,7 +6,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from llms import get_llm_client, has_llm_config
+from clients.llm import get_llm_client, has_llm_config
 
 logger = logging.getLogger(__name__)
 

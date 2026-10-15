@@ -1,7 +1,7 @@
 [project]
-name = "release-monitor"
-version = "1.1.1"
-description = "监控 GitHub Release，通过 AI 自动筛选并下载对应平台的发布文件"
+name = "update-monitor"
+version = "1.2.0"
+description = "监控 GitHub Release 和 App Store 更新，按需下载文件并发送通知"
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
 dependencies = [

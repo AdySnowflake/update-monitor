@@ -1,0 +1,9 @@
+{
+  "SenPlayer": {
+    "app_id": "6443975850",
+    "notify": ["feishu", "ticktick"],
+    "country": "us",
+    "version": "6.2.3",
+    "disabled": false
+  }
+}

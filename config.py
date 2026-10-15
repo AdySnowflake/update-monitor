@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 文件目录
-DOWNLOAD_DIR = Path(__file__).parent / "downloads"
+BASE_DIR = Path(__file__).resolve().parent
+DOWNLOAD_DIR = BASE_DIR / "downloads"
 
 _move_target_dir = os.getenv("MOVE_TARGET_DIR")
 MOVE_TARGET_DIR = Path(_move_target_dir).expanduser() if _move_target_dir else None

@@ -1,25 +1,24 @@
-import json
 import logging
 import sys
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 
 import config
-from error_analysis import generate_error_report
-from error_notification import send_auto_disable_notification, send_error_notification
-from github_poller import check_new_releases
-from pipeline import run_release
-from repo_rules import clear_failure_state, record_failure, update_repo_tag
+from ai.error_analysis import generate_error_report
+from notifications.alerts import send_error_notification
+from workflows.apple import RULES_FILE as APPLE_RULES_FILE
+from workflows.apple import run_apple_monitor
+from workflows.github import run_github_monitor
+from workflows.github_rules import RULES_FILE as REPO_RULES_FILE
 
 NOISY_LOGGERS = ("httpcore", "httpx", "openai", "urllib3")
 
 
 def setup_logging():
-    log_dir = Path(__file__).parent / "logs"
+    log_dir = config.BASE_DIR / "logs"
     log_dir.mkdir(exist_ok=True)
 
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s")
@@ -61,110 +60,43 @@ def _notify_failures(error_records: list[dict]) -> None:
         logger.error("飞书配置不完整，跳过错误通知")
         return
 
+    analysis_records = [
+        record for record in error_records if not record.get("auto_disabled")
+    ]
     llm_failed = any(
         record.get("error") in {"llm_failed", "all_llms_failed"}
         for record in error_records
     )
     ai_report = None
-    if not llm_failed:
-        ai_report = generate_error_report(error_records)
+    if analysis_records and not llm_failed:
+        ai_report = generate_error_report(analysis_records)
     send_error_notification(error_records, ai_report)
 
 
-def _record_processing_failure(
-    release,
-    error_log: str | None,
-    auto_disabled: list[dict],
-) -> None:
-    """记录一次处理失败，触发自动禁用时收集事件。"""
-    event = record_failure(
-        release.owner,
-        release.repo,
-        tag=release.tag,
-        error_log=error_log,
-    )
-    if event:
-        auto_disabled.append(event)
-
-
-def _notify_auto_disabled(events: list[dict]) -> None:
-    """连续失败触发自动禁用时发送飞书通知。"""
-    if not events:
-        return
-    send_auto_disable_notification(events)
-
-
 def main():
-    """遍历仓库，通过 GitHub API 检查并处理新 release。"""
+    """独立运行已配置的业务线，最后汇总本轮错误。"""
     setup_logging()
-    logger.info("检查 GitHub 仓库的新 release")
-
-    try:
-        new_releases, failures, auto_disabled = check_new_releases()
-    except Exception as error:
-        logger.exception("检查 GitHub release 失败")
-        _notify_failures(
-            [
+    failures = []
+    workflows = (
+        ("GitHub Release", REPO_RULES_FILE, run_github_monitor),
+        ("App Store", APPLE_RULES_FILE, run_apple_monitor),
+    )
+    for name, rules_file, run in workflows:
+        if not rules_file.exists():
+            logger.info("%s 配置文件尚未创建，跳过: %s", name, rules_file.name)
+            continue
+        try:
+            failures.extend(run())
+        except Exception as error:
+            logger.exception("%s 业务线执行失败", name)
+            failures.append(
                 {
-                    "stage": "release_check",
+                    "stage": name,
                     "error": type(error).__name__,
                     "message": str(error),
                 }
-            ]
-        )
-        return
-
-    if not new_releases:
-        logger.info("未发现可处理的新 release")
-        _notify_failures(failures)
-        _notify_auto_disabled(auto_disabled)
-        return
-
-    logger.info(f"发现 {len(new_releases)} 个新 release")
-
-    for release in new_releases:
-        try:
-            logger.info(f"处理: {release.owner}/{release.repo} @ {release.tag}")
-            result = run_release(
-                release.owner, release.repo, release.tag, release.assets
             )
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-
-            if result.get("success") == 1:
-                update_repo_tag(release.owner, release.repo, release.tag)
-                clear_failure_state(release.owner, release.repo)
-            else:
-                logger.error(
-                    f"处理 {release.owner}/{release.repo} @ {release.tag} 未成功，"
-                    "保留 last_tag 以便下次重试"
-                )
-                failures.append(
-                    {
-                        "stage": "release_processing",
-                        "repository": f"{release.owner}/{release.repo}",
-                        "tag": release.tag,
-                        "error": result.get("error", "processing_failed"),
-                        "error_log": result.get("error_log"),
-                    }
-                )
-                _record_processing_failure(
-                    release, result.get("error_log"), auto_disabled
-                )
-        except Exception as e:
-            logger.exception(f"处理 {release.owner}/{release.repo} 失败")
-            failures.append(
-                {
-                    "stage": "release_processing",
-                    "repository": f"{release.owner}/{release.repo}",
-                    "tag": release.tag,
-                    "error": type(e).__name__,
-                    "message": str(e),
-                }
-            )
-            _record_processing_failure(release, str(e), auto_disabled)
-
     _notify_failures(failures)
-    _notify_auto_disabled(auto_disabled)
 
 
 if __name__ == "__main__":

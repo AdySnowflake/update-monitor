@@ -1,10 +1,15 @@
-# release-monitor
+# Update Monitor
 
-`release-monitor` 定时检查 GitHub 仓库的最新 Release，使用 OpenAI 兼容模型按规则选择合适的 asset，下载文件，并按需创建 TickTick 待办或移动文件。处理最终失败时，程序会汇总本轮错误、尝试生成 AI 错误报告，并通过飞书自定义机器人发送通知。
+Update Monitor（`update-monitor`）包含两条独立业务线：
+
+- **GitHub Release**：检查最新 Release，使用 OpenAI 兼容模型筛选 asset，下载、按需移动文件，并创建 TickTick 待办。
+- **App Store**：通过 Apple 查询接口获取应用名称和版本，与记录比较，变化时通过飞书或 TickTick 推送。
+
+两条业务线各自维护规则文件，共用通知入口。运行失败时，程序会汇总本轮错误、尝试生成 AI 错误报告，并通过飞书自定义机器人发送通知。
 
 程序每次只执行一轮检查，适合由 cron 或其他任务调度器定时运行。
 
-## 处理流程
+## GitHub Release 处理流程
 
 ```text
 读取 repo_rules.json
@@ -13,6 +18,8 @@
 逐个查询 GitHub 最新 Release（单仓库失败不阻断其他仓库）
         │
         ├─ tag 与 last_tag 相同 ──────────────► 跳过
+        │
+        ├─ tag 未包含 tag_contains 关键词 ────► 跳过（配置时生效）
         │
         ▼
 主 LLM 按规则选择 asset（失败时重试）
@@ -25,9 +32,11 @@
         ▼
 下载到 downloads/
         │
-        ├─ 创建 TickTick 待办（可选、非阻断）
+        ▼
+移动到目标目录（可选）
         │
-        └─ 移动到目标目录（可选）
+        ▼
+创建 TickTick 待办（可选、非阻断）
         │
         ▼
 成功后更新 last_tag
@@ -36,7 +45,7 @@
 一轮运行中出现最终失败时：
 
 ```text
-汇总 GitHub 检查失败和 Release 处理失败
+汇总两条业务线的检查、处理和版本通知投递失败
         │
         ▼
 尝试让主/备用 LLM 生成错误报告
@@ -50,33 +59,38 @@ AI 错误分析与飞书发送是两条解耦的路径。即使 LLM 因 API Key 
 
 ## 环境要求
 
-- Python 3.12 或更高版本
+- Python 3.12（项目要求 `>=3.12,<3.13`）
 - [uv](https://docs.astral.sh/uv/)
-- 一个 OpenAI 兼容的聊天模型接口
+- GitHub Release 文件选择需要一个 OpenAI 兼容的聊天模型接口；版本监控直接使用来源接口
 - 可选：GitHub Token、TickTick、飞书自定义机器人
 
 ## 快速开始
 
 ```bash
-git clone <repository-url>
-cd release-monitor
+git clone <repository-url> update-monitor
+cd update-monitor
 
 cp .env.example .env
-cp repo_rules.example.json repo_rules.json
 
-# 编辑 .env 和 repo_rules.json 后安装并运行
+# 按需启用业务线，可以只复制其中一个规则文件
+cp repo_rules.example.json repo_rules.json
+cp apple_rules.example.json apple_rules.json
+
+# 编辑 .env 和对应的规则文件后安装并运行
 uv sync --locked
 uv run --locked python main.py
 ```
 
 运行日志会写入 `logs/pipeline_YYYYMMDD_HHMMSS.log`，下载文件默认保存在 `downloads/`。
 
+入口只运行已有规则文件对应的业务线。两条业务线各自隔离异常，某条业务线失败后继续执行另一条。
+
 ## 更新已有部署
 
 项目通过 Git 部署后，进入项目目录拉取最新代码并同步依赖：
 
 ```bash
-cd /path/to/release-monitor
+cd /path/to/update-monitor
 git pull --ff-only
 uv sync --locked
 ```
@@ -95,7 +109,7 @@ LLM_PRIMARY_MODEL=your-model
 LLM_REQUEST_TIMEOUT_SECONDS=30
 ```
 
-`LLM_PRIMARY_API_KEY` 与 `LLM_PRIMARY_MODEL` 必填。使用服务商默认地址时可以省略 `LLM_PRIMARY_BASE_URL`。
+使用 GitHub Release 文件选择时，`LLM_PRIMARY_API_KEY` 与 `LLM_PRIMARY_MODEL` 必填。使用服务商默认地址时可以省略 `LLM_PRIMARY_BASE_URL`。只使用版本监控时可以省略 LLM 配置；出现错误时仍会尝试 AI 分析，配置缺失则直接发送原始错误告警。
 
 备用模型可选。建议使用不同的 API Key 或服务商，使主接口发生配额、网络或服务故障时仍有回退能力：
 
@@ -109,11 +123,11 @@ LLM_FALLBACK_MODEL=your-fallback-model
 
 文件选择时，每个模型默认调用 3 次：首次调用加 2 次指数退避重试。OpenAI 客户端自身的重试已关闭，主模型全部失败后才会切换备用模型。最终失败时记录最后一次异常。
 
-所有环境变量只由 `config.py` 读取。`llms.py` 仅负责按角色惰性创建和缓存客户端，不包含用户专属 Provider 配置。
+所有环境变量只由 `config.py` 读取。`clients/llm.py` 仅负责按角色惰性创建和缓存客户端，不包含用户专属 Provider 配置。
 
-## 配置监控规则
+## 配置 GitHub Release 监控规则
 
-监控清单位于 `repo_rules.json`：
+监控清单位于 `repo_rules.json`，可复制 [repo_rules.example.json](repo_rules.example.json) 后修改。示例使用标准 JSON，字段的可选性和省略行为见下表。
 
 ```json
 {
@@ -121,58 +135,109 @@ LLM_FALLBACK_MODEL=your-fallback-model
     "extension": ".apk",
     "include": ["arm64-v8a"],
     "exclude": ["legacy"],
+    "tag_contains": "phone",
     "last_tag": null,
-    "disabled": false,
-    "consecutive_failures": 0,
-    "next_check_after": null
+    "disabled": false
   }
 }
 ```
 
-字段说明：
+仓库键 `owner/repo-name` 必填，格式为 `owner/repo`；每个仓库对象中的字段均可选，按需保留即可。
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `extension` | string | 目标文件扩展名，例如 `.apk`、`.ipa`、`.exe` |
-| `include` | string[] | 文件名应包含的关键词 |
-| `exclude` | string[] | 文件名不能包含的关键词 |
-| `last_tag` | string/null | 最后成功处理的 tag，由程序自动维护 |
-| `disabled` | boolean | 禁用开关：设为 `true` 后跳过该仓库；连续失败自动禁用也写此字段；写成其他类型视为非法配置 |
-| `consecutive_failures` | number | 连续失败次数，由程序自动维护，成功后移除 |
-| `next_check_after` | string/null | 失败退避截止时间（ISO 8601，上海时区），由程序自动维护，早于该时间不检查 |
+| 字段 | 类型 | 是否必填 | 说明与省略行为 |
+| --- | --- | --- | --- |
+| `extension` | string | 可选 | 目标文件扩展名，例如 `.apk`；省略时向 LLM 提供的规则中没有扩展名限制 |
+| `include` | string[] | 可选 | 文件名应包含的关键词；省略或 `[]` 表示没有包含关键词要求 |
+| `exclude` | string[] | 可选 | 文件名应排除的关键词；省略或 `[]` 表示没有排除关键词要求 |
+| `tag_contains` | string/null | 可选 | Tag 按大小写精确匹配子串；省略、`null` 或 `""` 表示接受任意 Tag |
+| `last_tag` | string/null | 可选，程序维护 | 最后成功处理的 tag；省略或 `null` 时首次处理当前最新 Release，成功后自动更新 |
+| `disabled` | boolean | 可选 | 省略时启用；`true` 时跳过该仓库，连续失败 3 轮后程序也会设为 `true` |
+| `consecutive_failures` | number | 可选，程序维护 | 省略时从 0 开始累计；成功或自动禁用后移除，示例中省略此字段 |
 
-仓库键必须采用 `owner/repo` 格式。`extension`、`include` 和 `exclude` 可以省略；规则会连同 GitHub 返回的 assets 一起交给 LLM 判断。
+仓库键必须采用 `owner/repo` 格式。`extension`、`include` 和 `exclude` 可以省略；文件筛选规则会连同 GitHub 返回的 assets 一起交给 LLM 判断。`tag_contains` 由程序在检查 Release 时处理，传给 LLM 的规则仅保留文件筛选相关字段。
 
 程序比较的是 GitHub “latest release”的 tag 与 `last_tag` 是否相同，不进行语义化版本排序。首次运行时 `last_tag` 可设为 `null`，此时会处理当前最新 Release。
 
-`repo_rules.json` 缺失或 JSON 无效会终止本轮检查，并在飞书已配置时发送错误通知；字段取值非法（如 `disabled` 不是布尔值）同样终止本轮并发送错误通知；空对象 `{}` 表示暂时没有需要监控的仓库。
+例如，设置 `"tag_contains": "phone"` 后，`v1.2.3-phone` 会进入后续文件选择和下载流程，`v1.2.3-TV` 会被跳过。Tag 筛选仅作用于 GitHub 返回的 latest Release；历史 Release 搜索属于独立功能，当前流程仅判断本次返回的版本。筛选跳过视为正常检查完成，保留 `last_tag` 并清除已有失败状态。`tag_contains` 的类型非法时，按该仓库检查失败累计次数，并执行下述告警和自动禁用规则。
 
-需要整理规则文件顺序时运行：
+`repo_rules.json` 缺失时跳过 GitHub Release 业务线；JSON 无效或字段取值非法（如 `disabled` 不是布尔值）会终止该业务线本轮检查，并在飞书已配置时发送错误通知。空对象 `{}` 表示暂时没有需要监控的仓库。
+
+需要整理两份规则文件的顺序时运行：
 
 ```bash
 uv run --locked python sort_repo_rules.py
 ```
 
-该脚本按仓库名（`/` 后面的部分）进行不区分大小写的排序，不会改动规则内容。
+该脚本同时整理 `repo_rules.json` 和 `apple_rules.json`：GitHub 按仓库名（`/` 后面的部分）排序，App Store 按顶层监控项名称排序，均忽略字母大小写。仅调整顶层条目顺序，保留每项字段内容；尚未创建的规则文件自动跳过。
 
-### 失败退避与自动禁用
+### 失败重试与自动禁用
 
-程序会按仓库记录连续失败次数（GitHub 检查失败和 release 处理失败都计入），并在两次检查之间做指数退避：
+GitHub 检查失败和 Release 处理失败均按仓库累计连续失败轮数，重试间隔统一由 cron 控制：
 
 | 情形 | 行为 |
 | --- | --- |
-| `disabled` 为 `true` | 跳过该仓库，不发起 GitHub 请求 |
-| 当前时间早于 `next_check_after` | 退避跳过，不计数也不清零 |
-| 检查或处理失败（第 1、2 次） | 计数 +1，`next_check_after` 设为当前时间加 `1h × 2^(次数-1)`（即 1 小时、2 小时） |
-| 检查或处理失败（第 3 次） | 移除计数字段并写入 `disabled: true`，发送飞书自动禁用告警 |
-| 检查成功且无新 release | 移除 `consecutive_failures` 和 `next_check_after` |
-| 处理成功 | 更新 `last_tag`，并同上清除失败状态 |
+| `disabled` 为 `true` | 跳过该仓库 |
+| 第 1 轮失败 | 保存 `consecutive_failures: 1`，进入本轮汇总告警 |
+| 第 2 轮失败 | 保存 `consecutive_failures: 2`，只记录本地日志 |
+| 第 3 轮失败 | 移除计数并写入 `disabled: true`，在汇总告警中包含错误原因及恢复方法 |
+| 检查成功且无新 Release，或 Tag 被筛选跳过 | 清除连续失败计数 |
+| Release 处理成功 | 更新 `last_tag`，清除连续失败计数 |
 
-按 30 分钟 cron 为例：第 1 次失败后约 1 小时重试，第 2 次后约 2 小时，第 3 次失败即自动禁用并通知，累计约 3 小时。短时故障（如网络抖动）通常在恢复后的一轮"检查成功且无新 release"时自动清零，不会积累到禁用阈值。
+每段连续故障最多尝试 3 轮、发送 2 次故障通知。第三轮的禁用说明与错误合并进同一条汇总告警，自动禁用记录直接使用原始错误，省去重复的 AI 分析。LLM 每轮内部的短暂重试和备用模型回退保持原有配置。规则文件整体读取失败等业务线级错误仍进入每轮汇总告警。
 
-被自动禁用的仓库不会自行恢复。修复问题后，将 `repo_rules.json` 中该仓库的 `disabled` 改回 `false` 或删除该字段即可恢复监控；急用时也可同时删除 `next_check_after`。失败期间 `last_tag` 不会更新，恢复后的下一轮会重新处理未成功的 release。
+例如 cron 每 30 分钟执行一次，首次失败后约 30 分钟重试，约 60 分钟时第三次失败并自动禁用；实际执行时间取决于 cron 调度和每轮耗时。
 
-## 配置飞书错误通知
+修复问题后，将 `disabled` 改为 `false` 或删除该字段即可恢复监控。失败期间保留 `last_tag`，恢复后继续处理待完成的 Release。旧版 `next_check_after` 字段已停止参与调度，后续记录失败或清除失败状态时自动移除。
+
+## 配置 App Store 监控
+
+App Store 使用独立的 `apple_rules.json`，可复制 [apple_rules.example.json](apple_rules.example.json) 后修改。示例使用标准 JSON，字段的可选性和默认值见下表。
+
+```json
+{
+  "SenPlayer": {
+    "app_id": "6443975850",
+    "notify": ["feishu", "ticktick"],
+    "country": "us",
+    "version": "6.2.3",
+    "disabled": false
+  }
+}
+```
+
+外层名称由用户自定义，例如 `SenPlayer`、`我的播放器`；它用于标识监控项，查询时使用 `app_id`。通知中的应用名称来自 Apple 返回的 `trackName`。
+
+监控项名称（如 `SenPlayer`）、`app_id` 和 `notify` 必填，其余字段均可选。示例将必填字段放在前面，可选字段放在后面。
+
+| 字段 | 类型 | 是否必填 | 说明与省略行为 |
+| --- | --- | --- | --- |
+| `app_id` | string/number | 必填 | Apple 应用 ID，支持正整数或数字字符串 |
+| `notify` | string[] | 必填 | 明确指定至少一个通知渠道；支持 `feishu`、`ticktick`，可选择一个或同时选择 |
+| `country` | string | 可选 | App Store 两位地区代码，省略时为 `"us"`；`"cn"` 表示中国区 |
+| `version` | string/null | 可选，程序维护 | 已通知的版本；省略或 `null` 时首次推送当前版本，全部渠道送达后自动更新 |
+| `disabled` | boolean | 可选 | 省略时为 `false`；`true` 时跳过该项的查询、通知和版本更新 |
+
+填入上述 `version: "6.2.3"` 后，查询仍为 `6.2.3` 时跳过；查询变为其他版本时，通知标题为 `应用名称 - 版本号`，正文为 `Update Monitor - App Store` 和 App Store 链接。规则中填写的版本作为你的监控起点，示例值仅供参考。
+
+所选渠道需要在 `.env` 中启用并填写凭据：飞书使用 `FEISHU_ENABLED=true`，TickTick 使用 `TODO_ENABLED=true`。更新通过飞书蓝色卡片或 TickTick 当天的全天待办送达。
+
+全部所选渠道成功后，程序只更新该项的 `version`。部分或全部渠道失败时保留原版本，下一轮再次向所选渠道发送；已成功的渠道在这种情况下也会再次收到通知。JSON 始终保持上述配置结构。
+
+单个应用的配置、查询或通知失败后继续检查其他项，失败记录进入本轮汇总告警。`apple_rules.json` 缺失时跳过 App Store 业务线，空对象表示当前没有监控项。暂停某个应用时设置 `"disabled": true`，恢复时改为 `false` 或删除该字段。App Store 的该开关用于手动暂停，失败重试继续沿用原有流程。
+
+## 公共版本处理与通知接口
+
+`clients/app_store.py` 专门处理 Apple 查询接口，将 `trackName`、`version` 和 `trackViewUrl` 整理为 `VersionInfo(name, version, url)`。`workflows/apple.py` 负责读取 App Store 清单、调用查询以及保存版本。
+
+拿到版本信息之后，通过 `workflows/versions.py` 的 `process_version(info, previous_version, channels)` 统一比较版本和通知。比较采用字符串是否相同的判断。以后接入其他业务线时，各自负责获取信息和维护配置，再将名称、版本和链接交给这个公共函数。
+
+`notifications/` 提供 `Notification(title, content, level)` 和 `send_notification(message, channels)`。业务线组织通知内容、指定渠道，公共入口负责独立投递并返回各渠道的成功状态。`level` 用于选择飞书卡片颜色：更新为蓝色，错误为红色。TickTick 接收相同消息的标题和正文。
+
+GitHub Release 的待办和汇总错误告警均使用这个通知入口，自动禁用说明合并在汇总告警中。GitHub 的待办失败继续按原有的非阻断策略处理；App Store 以全部所选渠道送达作为完成条件。
+
+新增通知渠道时，实现接收 `Notification`、返回布尔值的发送函数，并加入 `NOTIFIERS` 注册表。业务线可以直接在渠道列表中使用注册名称。
+
+## 配置飞书通知
 
 在飞书群中添加启用“签名校验”的自定义机器人，然后将 Webhook 和签名密钥写入当前项目的 `.env`：
 
@@ -182,18 +247,18 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/...
 FEISHU_SIGNING_SECRET=your-signing-secret
 ```
 
-飞书通知由 `feishu_notifier.py` 使用项目已有的 `requests` 依赖实现，消息类型为交互式卡片。
+飞书通知由 `notifications/feishu.py` 使用项目已有的 `requests` 依赖实现，消息类型为交互式卡片。版本更新使用蓝色卡片，以下错误通知使用红色卡片。
 
-告警使用红色卡片，标题固定为 `Release Monitor 告警`，每轮运行只汇总发送一条：
+告警使用红色卡片，标题固定为 `Update Monitor 告警`，每轮运行只汇总发送一条：
 
 - 发生时间；
-- 故障仓库和 tag；
+- 故障仓库和 tag，或版本监控项标识；
 - 以代码文本框显示由失败发生处传递的最终错误日志；
 - AI 给出的分析内容（仅分析成功时）。
 
 告警不在通知层翻译错误码或生成错误描述，不定义程序中不存在的严重级别或运行状态，也不会展示重试次数、内部错误码或 JSON。错误记录会提供给 AI 分析，本地日志保留完整异常。
 
-仓库因连续失败 3 次被自动禁用时，会额外发送一张红色卡片，标题为 `Release Monitor 自动禁用告警`，内容包含仓库与 tag、触发原因、最近错误日志以及恢复方法，走同一 Webhook 渠道。
+GitHub 仓库仅在首次失败和第三轮失败触发自动禁用时进入汇总告警；禁用说明随该仓库的错误一起展示，包含暂停原因和手动恢复方法。第二轮失败只记录本地日志。
 
 以下情况不会阻止错误通知：
 
@@ -220,7 +285,7 @@ HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
 ```
 
-代理用于 GitHub API、文件下载、TickTick 和飞书 Webhook 请求。
+代理用于 GitHub API、Apple 查询接口、文件下载、TickTick 和飞书 Webhook 请求。
 
 ### TickTick 待办
 
@@ -230,7 +295,7 @@ TICKTICK_ACCESS_TOKEN=your-access-token
 TICKTICK_PROJECT_ID=your-project-id
 ```
 
-启用后，下载完成会创建一个上海时区当天的全天待办。TickTick 创建失败只记录日志，不会让 Release 处理失败，也不会阻止文件移动或 `last_tag` 更新。
+启用后，GitHub Release 在下载及可选移动成功后创建一个上海时区当天的全天待办。TickTick 创建失败只记录日志，Release 继续按下载和移动结果更新 `last_tag`。App Store 通过规则中的 `notify` 选择此渠道，失败时保留原版本供下一轮重试。
 
 ### 移动下载文件
 
@@ -240,7 +305,7 @@ MOVE_TARGET_DIR=/path/to/target
 
 配置后，下载成功的文件会移动到目标目录。目标目录不存在时自动创建；同名目标文件已存在时拒绝覆盖，并将本次 Release 标记为失败。此时 `last_tag` 不会更新，下载文件保留在 `downloads/`，下一轮会重新处理该 Release。
 
-## 成功与失败判定
+## GitHub Release 成功与失败判定
 
 只有以下步骤都成功时才更新对应仓库的 `last_tag`：
 
@@ -261,35 +326,60 @@ TickTick 是非阻断功能，不参与成功判定。飞书错误通知也不�
 ```cron
 PATH=/home/your-user/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-*/30 * * * * cd /path/to/release-monitor && flock -n /tmp/release-monitor.lock uv run --locked python main.py >> /path/to/release-monitor/logs/cron.log 2>&1
+*/30 * * * * cd /path/to/update-monitor && flock -n /tmp/update-monitor.lock uv run --locked python main.py >> /path/to/update-monitor/logs/cron.log 2>&1
 ```
 
-使用 `command -v uv` 确认 `uv` 的实际路径，并按需调整 cron 的 `PATH`。`flock -n` 会在上一轮仍未结束时直接跳过新一轮，避免重复下载、重复待办和并发写入规则文件。
+通过 SSH 部署时，远程命令的 `uv` 路径确认、cron 环境和运行锁要求见 [AGENTS.md 的服务器部署说明](AGENTS.md#服务器部署)。
 
 ## 项目结构
 
 ```text
-main.py                  # 入口；汇总本轮失败并触发分析和通知
-github_poller.py         # 检查各仓库的最新 Release
-pipeline.py              # 文件选择、下载、待办和移动编排
-ai_file_selector.py      # LLM 文件选择、重试与备用模型回退
-error_analysis.py        # 将全部失败记录交给 LLM 生成错误报告
-error_notification.py    # 构造并发送汇总错误通知
-feishu_notifier.py       # 飞书卡片、签名与 Webhook 请求
-llms.py                  # 按角色惰性创建 LLM 客户端
-downloader.py            # 流式下载和临时文件处理
-file_transfer.py         # 可选的下载文件移动
-ticktick.py              # 可选的 TickTick 待办
-repo_rules.py            # 规则读取、保存、last_tag 更新与失败退避/自动禁用
-sort_repo_rules.py       # 整理 repo_rules.json 顺序
-config.py                # 从环境变量生成运行配置
-.env.example             # 环境变量模板
-repo_rules.example.json  # 仓库规则模板
+main.py                   # 日志初始化、业务线调度和汇总告警
+config.py                 # 环境变量与项目根目录
+models.py                 # ReleaseInfo、VersionInfo 数据结构
+clients/                  # 外部服务查询与客户端
+├── github.py             # GitHub Release 查询与 Tag 条件匹配
+├── app_store.py          # Apple 应用名称、版本和链接查询
+└── llm.py                # 主/备用 LLM 客户端
+notifications/            # 公共通知接口
+├── dispatcher.py         # 消息结构、渠道注册与独立投递
+├── feishu.py             # 飞书卡片、签名和发送
+├── ticktick.py           # TickTick 待办创建
+└── alerts.py             # 汇总错误与自动禁用告警内容
+workflows/                # 业务流程
+├── github.py             # GitHub 仓库轮询与 Release 处理
+├── github_rules.py       # 仓库规则、版本记录、失败计数和禁用状态
+├── release.py            # asset 筛选、下载、移动与成功通知
+├── apple.py              # App Store 清单、查询编排与版本保存
+└── versions.py           # 获取版本后的公共比较与更新通知
+ai/                       # 模型处理逻辑
+├── file_selector.py      # asset 筛选、重试和模型回退
+└── error_analysis.py     # 汇总错误分析
+files/                    # 文件操作
+├── download.py           # 流式下载与临时文件处理
+└── transfer.py           # 文件移动
+sort_repo_rules.py        # 同时整理 GitHub 和 App Store 规则顺序
+.env.example              # 环境变量模板
+repo_rules.example.json   # GitHub Release 规则模板
+apple_rules.example.json  # App Store 规则模板
+tests/                    # 核心业务流程测试
 ```
+
+业务线调用 `clients/` 获取信息，使用 `ai/` 和 `files/` 完成处理，再通过 `notifications/` 发送消息。通知渠道的 HTTP 请求与签名逻辑直接归入各自渠道模块，方便一起维护。
+
+`repo_rules.json`、`apple_rules.json`、`.env`、`logs/` 和 `downloads/` 继续位于项目根目录；文件迁移后通过 `config.BASE_DIR` 保持目录定位。运行命令和 cron 配置沿用原有方式。
+
+## 测试
+
+```bash
+uv run --locked python -m unittest discover -s tests -v
+```
+
+保留 4 个核心业务测试：GitHub 连续失败时的告警与自动禁用，以及 App Store 的版本保存与去重、投递失败后重试和禁用跳过。外部查询和通知使用 mock，规则文件在临时目录中实际读写。
 
 ## 安全说明
 
-- `.env`、`repo_rules.json`、`downloads/` 和 `logs/` 已加入 `.gitignore`。
+- `.env`、`repo_rules.json`、`apple_rules.json`、`downloads/` 和 `logs/` 已加入 `.gitignore`。
 - 不要把 LLM API Key、GitHub Token、TickTick Token、飞书 Webhook 或签名密钥提交到版本库。
 - 错误分析可能会把第三方 API 异常消息发送给已配置的 LLM；飞书通知会包含最终错误摘要和可选的 AI 分析，请选择合适的模型服务与飞书群。
 

@@ -12,18 +12,16 @@ TICKTICK_API_URL = "https://api.ticktick.com/open/v1/task"
 TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
-def create_todo(repo_name: str, tag: str) -> bool:
+def create_todo(title: str, content: str = "") -> bool:
     """创建 TickTick 待办事项。
 
     Args:
-        repo_name: 仓库名称（不含 owner）
-        tag: 版本标签
+        title: 待办标题，由业务线提供
+        content: 待办内容，由业务线提供
 
     Returns:
         是否创建成功
     """
-    title = f"{repo_name} - {tag}"
-    content = "GitHub release monitor"
     start_datetime = datetime.now(TIMEZONE).replace(
         hour=0,
         minute=0,

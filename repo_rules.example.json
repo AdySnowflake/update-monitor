@@ -2,10 +2,9 @@
   "owner/repo-name": {
     "extension": ".apk",
     "include": ["arm64-v8a"],
-    "exclude": [],
+    "exclude": ["legacy"],
+    "tag_contains": "phone",
     "last_tag": null,
-    "disabled": false,
-    "consecutive_failures": 0,
-    "next_check_after": null
+    "disabled": false
   }
 }

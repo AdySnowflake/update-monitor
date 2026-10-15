@@ -2,17 +2,17 @@ import json
 import logging
 
 import config
-from ai_file_selector import select_file
-from downloader import download_file
-from file_transfer import move_downloaded_file
-from repo_rules import get_repo_rules
-from ticktick import create_todo
+from ai.file_selector import select_file
+from files.download import download_file
+from files.transfer import move_downloaded_file
+from notifications import Notification, send_notification
+from workflows.github_rules import get_repo_rules
 
 logger = logging.getLogger(__name__)
 
-# 传给 AI 选择器时剔除的程序运维字段，提示词只关心筛选规则本身
+# 传给 AI 选择器时剔除 Tag 筛选与运维字段，提示词只关心文件筛选规则
 BOOKKEEPING_RULE_KEYS = frozenset(
-    {"last_tag", "disabled", "consecutive_failures", "next_check_after"}
+    {"last_tag", "disabled", "consecutive_failures", "next_check_after", "tag_contains"}
 )
 
 
@@ -150,11 +150,7 @@ def _process_release_assets(
             }
         step.log(f"→ {filepath}")
 
-    # 创建待办（可选）
-    if config.TODO_ENABLED and not create_todo(repo, tag):
-        logger.warning("待办创建未成功，但不影响下载结果")
-
-    # 转移下载文件（可选，位于 TickTick 处理之后）
+    # 转移下载文件（可选）
     final_filepath = filepath
     if config.MOVE_TARGET_DIR:
         try:
@@ -172,6 +168,16 @@ def _process_release_assets(
                 "file": str(filepath),
             }
         final_filepath = moved_path
+
+    # 全部文件操作完成后，统一通过通知层创建待办。
+    if config.TODO_ENABLED:
+        send_notification(
+            Notification(
+                title=f"{repo} - {tag}",
+                content=f"Update Monitor - GitHub Release\n{full_repo}\n文件：{final_filepath}",
+            ),
+            ["ticktick"],
+        )
 
     logger.info(f"流程完成: {total_steps}/{total_steps} 步骤成功")
     return {"success": 1, "download_url": download_url, "file": str(final_filepath)}

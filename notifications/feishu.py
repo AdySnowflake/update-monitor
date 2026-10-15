@@ -8,7 +8,7 @@ import requests
 import config
 
 
-def send_card(title: str, content: str) -> dict:
+def send_card(title: str, content: str, *, template: str = "red") -> dict:
     timestamp = int(time.time())
     string_to_sign = f"{timestamp}\n{config.FEISHU_SIGNING_SECRET}".encode()
     sign = base64.b64encode(
@@ -25,7 +25,7 @@ def send_card(title: str, content: str) -> dict:
                     "tag": "plain_text",
                     "content": title,
                 },
-                "template": "red",
+                "template": template,
             },
             "body": {
                 "direction": "vertical",
