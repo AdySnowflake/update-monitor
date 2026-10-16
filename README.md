@@ -1,6 +1,6 @@
 # Update Monitor
 
-Update Monitor（`update-monitor`）包含两条独立业务线：
+Update Monitor 包含两条独立业务线：
 
 - **GitHub Release**：检查最新 Release，使用 OpenAI 兼容模型筛选 asset，下载、按需移动文件，并创建 TickTick 待办。
 - **App Store**：通过 Apple 查询接口获取应用名称和版本，与记录比较，变化时通过飞书或 TickTick 推送。
