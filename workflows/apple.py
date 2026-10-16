@@ -56,12 +56,14 @@ def _validate_rule(rule: dict) -> list[str]:
     return list(dict.fromkeys(channels))
 
 
-def run_apple_monitor(path: Path | None = None) -> list[dict]:
-    """逐项检查版本并投递更新通知，返回本轮失败记录。"""
+def run_apple_monitor(path: Path | None = None, *, targets: set[str] | None = None) -> list[dict]:
+    """检查全部或指定应用，返回本遍失败记录。"""
     path = path if path is not None else RULES_FILE
     rules = load_rules(path)
     failures = []
     for key, rule in rules.items():
+        if targets is not None and key not in targets:
+            continue
         try:
             if not isinstance(rule, dict):
                 raise ValueError("监控项应为对象")

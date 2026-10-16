@@ -18,18 +18,20 @@ from workflows.release import run_release
 logger = logging.getLogger(__name__)
 
 
-def check_new_releases() -> tuple[list[ReleaseInfo], list[dict]]:
-    """遍历 repo_rules.json，返回新版本和需要告警的失败记录。"""
+def check_new_releases(targets: set[str] | None = None) -> tuple[list[ReleaseInfo], list[dict]]:
+    """检查全部或指定仓库，返回新版本和全部失败记录。"""
     rules = load_rules()
     new_releases: list[ReleaseInfo] = []
     failures: list[dict] = []
 
     for repo_key in rules:
-        rule = rules[repo_key]
-        if is_disabled(rule):
-            logger.info(f"仓库 {repo_key} 已禁用，跳过")
+        if targets is not None and repo_key not in targets:
             continue
+        rule = rules[repo_key]
         try:
+            if is_disabled(rule):
+                logger.info(f"仓库 {repo_key} 已禁用，跳过")
+                continue
             owner, repo = repo_key.split("/")
             release_info = check_latest_release(
                 owner,
@@ -43,14 +45,13 @@ def check_new_releases() -> tuple[list[ReleaseInfo], list[dict]]:
                 f"{type(error).__name__}: {error}"
             )
             logger.error(error_log)
-            _record_failure(
+            failures.append(
                 {
                     "stage": "release_check",
                     "repository": str(repo_key),
                     "error": type(error).__name__,
                     "error_log": error_log,
-                },
-                failures,
+                }
             )
             continue
 
@@ -60,33 +61,40 @@ def check_new_releases() -> tuple[list[ReleaseInfo], list[dict]]:
             clear_failure_state(owner, repo)
 
     logger.info(
-        "检查完成，发现 %s 个新 release，%s 个仓库需要告警",
+        "检查完成，发现 %s 个新 release，%s 个仓库检查失败",
         len(new_releases), len(failures),
     )
     return new_releases, failures
 
 
-def _record_failure(record: dict, failures: list[dict]) -> None:
-    """首次失败和自动禁用时进入汇总告警，其余失败只记录本地日志。"""
-    try:
-        count = record_failure(record["repository"])
-    except Exception:
-        logger.exception("保存 %s 的失败计数出错", record["repository"])
-        failures.append(record)
-        return
-    if count >= MAX_CONSECUTIVE_FAILURES:
-        record["auto_disabled"] = True
-        failures.append(record)
-    elif count == 1:
-        failures.append(record)
+def finalize_github_failures(records: list[dict]) -> list[dict]:
+    """两遍执行后累计一次仓库失败，保留首次失败和自动禁用告警。"""
+    alerts = []
+    for record in records:
+        repository = record.get("repository")
+        if not repository:
+            alerts.append(record)
+            continue
+        try:
+            count = record_failure(repository)
+        except Exception:
+            logger.exception("保存 %s 的失败计数出错", repository)
+            alerts.append(record)
+            continue
+        if count >= MAX_CONSECUTIVE_FAILURES:
+            record["auto_disabled"] = True
+            alerts.append(record)
+        elif count == 1:
+            alerts.append(record)
+    return alerts
 
 
-def run_github_monitor() -> list[dict]:
-    """执行 GitHub Release 业务线，返回需要告警的失败记录。"""
+def run_github_monitor(*, targets: set[str] | None = None) -> list[dict]:
+    """执行全部或指定仓库，返回本遍失败记录，供入口补跑和汇总。"""
     logger.info("检查 GitHub 仓库的新 release")
 
     try:
-        new_releases, failures = check_new_releases()
+        new_releases, failures = check_new_releases(targets)
     except Exception as error:
         logger.exception("检查 GitHub release 失败")
         return [
@@ -119,27 +127,25 @@ def run_github_monitor() -> list[dict]:
                     f"处理 {release.owner}/{release.repo} @ {release.tag} 未成功，"
                     "保留 last_tag 以便下次重试"
                 )
-                _record_failure(
+                failures.append(
                     {
                         "stage": "release_processing",
                         "repository": f"{release.owner}/{release.repo}",
                         "tag": release.tag,
                         "error": result.get("error", "processing_failed"),
                         "error_log": result.get("error_log"),
-                    },
-                    failures,
+                    }
                 )
         except Exception as e:
             logger.exception(f"处理 {release.owner}/{release.repo} 失败")
-            _record_failure(
+            failures.append(
                 {
                     "stage": "release_processing",
                     "repository": f"{release.owner}/{release.repo}",
                     "tag": release.tag,
                     "error": type(e).__name__,
                     "message": str(e),
-                },
-                failures,
+                }
             )
 
     return failures

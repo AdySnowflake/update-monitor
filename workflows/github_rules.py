@@ -25,15 +25,13 @@ def save_rules(rules: dict) -> None:
 
 
 def get_repo_rules(full_name: str) -> dict:
-    """获取指定仓库的规则。
-
-    Args:
-        full_name: 仓库全名，格式为 owner/repo
-
-    Returns:
-        规则字典
-    """
+    """获取仓库规则，并确认每个目标文件都有一个筛选组。"""
     rule = load_rules()[full_name]
+    filters = rule.get("filters")
+    if not isinstance(filters, list) or not filters or any(
+        not isinstance(group, dict) for group in filters
+    ):
+        raise ValueError("filters 必填，应为非空对象数组；单文件筛选也应放入一组")
     logger.info(f"找到 {full_name} 的规则: {rule}")
     return rule
 

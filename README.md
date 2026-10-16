@@ -5,9 +5,9 @@ Update Monitor（`update-monitor`）包含两条独立业务线：
 - **GitHub Release**：检查最新 Release，使用 OpenAI 兼容模型筛选 asset，下载、按需移动文件，并创建 TickTick 待办。
 - **App Store**：通过 Apple 查询接口获取应用名称和版本，与记录比较，变化时通过飞书或 TickTick 推送。
 
-两条业务线各自维护规则文件，共用通知入口。运行失败时，程序会汇总本轮错误、尝试生成 AI 错误报告，并通过飞书自定义机器人发送通知。
+两条业务线各自维护规则文件，共用通知入口。每轮先执行两条业务线的完整检查，再补跑失败的仓库或应用一次，随后汇总仍然失败的错误、尝试生成 AI 错误报告，并通过飞书自定义机器人发送通知。
 
-程序每次只执行一轮检查，适合由 cron 或其他任务调度器定时运行。
+程序每次执行一轮检查，每轮包含首遍执行和一次失败项补跑，适合由 cron 或其他任务调度器定时运行。
 
 ## GitHub Release 处理流程
 
@@ -22,30 +22,36 @@ Update Monitor（`update-monitor`）包含两条独立业务线：
         ├─ tag 未包含 tag_contains 关键词 ────► 跳过（配置时生效）
         │
         ▼
-主 LLM 按规则选择 asset（失败时重试）
+主 LLM 一次处理全部筛选组，每组选一个 asset（失败时重试）
         │
         ├─ 主 LLM 最终失败 ─► 备用 LLM（可选，同样重试）
         │
         ▼
-校验下载地址确实来自 Release assets
+校验每组均有下载地址，且全部来自 Release assets
         │
         ▼
-下载到 downloads/
+依次下载到 downloads/ 下的仓库与 Tag 专属缓存目录
         │
         ▼
-移动到目标目录（可选）
+整组转移到目标目录（可选，支持部分成功后重试）
         │
         ▼
 创建 TickTick 待办（可选、非阻断）
         │
         ▼
-成功后更新 last_tag
+整组成功后更新 last_tag
 ```
 
-一轮运行中出现最终失败时：
+每轮在两条业务线首遍执行完毕后收尾：
 
 ```text
-汇总两条业务线的检查、处理和版本通知投递失败
+仅补跑首遍失败的仓库和应用一次
+        │
+        ▼
+移除已恢复项，按最终结果累计 GitHub 失败轮数
+        │
+        ▼
+汇总仍需告警的检查、处理和版本通知投递失败
         │
         ▼
 尝试让主/备用 LLM 生成错误报告
@@ -54,6 +60,8 @@ Update Monitor（`update-monitor`）包含两条独立业务线：
         │
         └─ 分析失败 ─► 可读报错，无 AI 内容 ─► 飞书告警
 ```
+
+补跑会重新执行失败监控项的查询与处理流程，已成功项保留首遍结果。规则文件整体读取失败时，补跑对应业务线。GitHub 的失败计数和自动禁用在补跑结束后处理，同一仓库每轮最多累计一次失败。
 
 AI 错误分析与飞书发送是两条解耦的路径。即使 LLM 因 API Key 余额耗尽、鉴权失败或服务不可用而无法分析，程序仍会直接发送原始错误通知。文件选择阶段已经确认不可用的模型不会被错误分析再次调用。
 
@@ -81,7 +89,7 @@ uv sync --locked
 uv run --locked python main.py
 ```
 
-运行日志会写入 `logs/pipeline_YYYYMMDD_HHMMSS.log`，下载文件默认保存在 `downloads/`。
+运行日志会写入 `logs/pipeline_YYYYMMDD_HHMMSS.log`，下载文件按仓库和 Tag 的 SHA-256 摘要分目录保存在 `downloads/`，同一 Release 重试时复用完整文件。
 
 入口只运行已有规则文件对应的业务线。两条业务线各自隔离异常，某条业务线失败后继续执行另一条。
 
@@ -132,9 +140,18 @@ LLM_FALLBACK_MODEL=your-fallback-model
 ```json
 {
   "owner/repo-name": {
-    "extension": ".apk",
-    "include": ["arm64-v8a"],
-    "exclude": ["legacy"],
+    "filters": [
+      {
+        "extension": ".apk",
+        "include": ["arm64-v8a"],
+        "exclude": ["legacy"]
+      },
+      {
+        "extension": ".apk",
+        "include": ["armeabi-v7a"],
+        "exclude": ["legacy"]
+      }
+    ],
     "tag_contains": "phone",
     "last_tag": null,
     "disabled": false
@@ -142,25 +159,33 @@ LLM_FALLBACK_MODEL=your-fallback-model
 }
 ```
 
-仓库键 `owner/repo-name` 必填，格式为 `owner/repo`；每个仓库对象中的字段均可选，按需保留即可。
+仓库键 `owner/repo-name` 必填，格式为 `owner/repo`。`filters` 必填，至少包含一个筛选组；每组选择一个文件，单文件下载填写一组即可。仓库层的其余字段可选。
 
 | 字段 | 类型 | 是否必填 | 说明与省略行为 |
 | --- | --- | --- | --- |
-| `extension` | string | 可选 | 目标文件扩展名，例如 `.apk`；省略时向 LLM 提供的规则中没有扩展名限制 |
-| `include` | string[] | 可选 | 文件名应包含的关键词；省略或 `[]` 表示没有包含关键词要求 |
-| `exclude` | string[] | 可选 | 文件名应排除的关键词；省略或 `[]` 表示没有排除关键词要求 |
+| `filters` | object[] | 必填 | 非空筛选组数组，组内字段见下表；一次 LLM 请求按顺序为全部组各选一个文件 |
 | `tag_contains` | string/null | 可选 | Tag 按大小写精确匹配子串；省略、`null` 或 `""` 表示接受任意 Tag |
 | `last_tag` | string/null | 可选，程序维护 | 最后成功处理的 tag；省略或 `null` 时首次处理当前最新 Release，成功后自动更新 |
 | `disabled` | boolean | 可选 | 省略时启用；`true` 时跳过该仓库，连续失败 3 轮后程序也会设为 `true` |
 | `consecutive_failures` | number | 可选，程序维护 | 省略时从 0 开始累计；成功或自动禁用后移除，示例中省略此字段 |
 
-仓库键必须采用 `owner/repo` 格式。`extension`、`include` 和 `exclude` 可以省略；文件筛选规则会连同 GitHub 返回的 assets 一起交给 LLM 判断。`tag_contains` 由程序在检查 Release 时处理，传给 LLM 的规则仅保留文件筛选相关字段。
+每个筛选组的字段均可选：
+
+| 字段 | 类型 | 说明与省略行为 |
+| --- | --- | --- |
+| `extension` | string | 文件扩展名，例如 `.apk`、`.exe`；省略时没有扩展名限制 |
+| `include` | string[] | 文件名应同时包含的全部关键词；省略或 `[]` 时没有包含关键词要求 |
+| `exclude` | string[] | 文件名应排除的全部关键词；省略或 `[]` 时没有排除关键词要求 |
+
+每组独立筛选，`filters: [{}]` 表示从 assets 中选一个最合适的文件。任意一组未选出文件，则该仓库本轮处理失败；多组选择相同的 URL 时合并下载一次。只有 `filters` 会传给 LLM，`tag_contains` 继续由程序在检查 Release 时处理。
+
+已有部署升级时，将仓库顶层的 `extension`、`include`、`exclude` 移入 `filters` 的第一个对象，保留 `tag_contains`、`last_tag`、`disabled` 和失败计数。旧的平铺筛选字段需要在部署新代码前迁移。新增筛选组后仍沿用 Tag 去重；需要重新处理当前 Release 时，将 `last_tag` 设为 `null`。
 
 程序比较的是 GitHub “latest release”的 tag 与 `last_tag` 是否相同，不进行语义化版本排序。首次运行时 `last_tag` 可设为 `null`，此时会处理当前最新 Release。
 
 例如，设置 `"tag_contains": "phone"` 后，`v1.2.3-phone` 会进入后续文件选择和下载流程，`v1.2.3-TV` 会被跳过。Tag 筛选仅作用于 GitHub 返回的 latest Release；历史 Release 搜索属于独立功能，当前流程仅判断本次返回的版本。筛选跳过视为正常检查完成，保留 `last_tag` 并清除已有失败状态。`tag_contains` 的类型非法时，按该仓库检查失败累计次数，并执行下述告警和自动禁用规则。
 
-`repo_rules.json` 缺失时跳过 GitHub Release 业务线；JSON 无效或字段取值非法（如 `disabled` 不是布尔值）会终止该业务线本轮检查，并在飞书已配置时发送错误通知。空对象 `{}` 表示暂时没有需要监控的仓库。
+`repo_rules.json` 缺失时跳过 GitHub Release 业务线；JSON 无效时按业务线整体失败补跑一次。单仓库字段取值非法（如 `disabled` 不是布尔值）作为该仓库失败处理，其他仓库继续执行；补跑后仍失败的项按下述规则累计并告警。空对象 `{}` 表示暂时没有需要监控的仓库。
 
 需要整理两份规则文件的顺序时运行：
 
@@ -172,7 +197,7 @@ uv run --locked python sort_repo_rules.py
 
 ### 失败重试与自动禁用
 
-GitHub 检查失败和 Release 处理失败均按仓库累计连续失败轮数，重试间隔统一由 cron 控制：
+每轮首遍检查结束后，GitHub 检查失败和 Release 处理失败的仓库各补跑一次。补跑仍失败时累计连续失败轮数；补跑成功时清除失败状态。跨轮检查间隔由 cron 控制：
 
 | 情形 | 行为 |
 | --- | --- |
@@ -183,7 +208,7 @@ GitHub 检查失败和 Release 处理失败均按仓库累计连续失败轮数�
 | 检查成功且无新 Release，或 Tag 被筛选跳过 | 清除连续失败计数 |
 | Release 处理成功 | 更新 `last_tag`，清除连续失败计数 |
 
-每段连续故障最多尝试 3 轮、发送 2 次故障通知。第三轮的禁用说明与错误合并进同一条汇总告警，自动禁用记录直接使用原始错误，省去重复的 AI 分析。LLM 每轮内部的短暂重试和备用模型回退保持原有配置。规则文件整体读取失败等业务线级错误仍进入每轮汇总告警。
+每段连续故障最多尝试 3 轮，每轮最多执行两遍、累计一次失败，发送 2 次故障通知。第三轮的禁用说明与错误合并进同一条汇总告警，自动禁用记录直接使用原始错误，省去重复的 AI 分析。LLM 每次执行的短暂重试和备用模型回退保持原有配置。规则文件整体读取失败等业务线级错误补跑一次后，仍然失败则进入本轮汇总告警。
 
 例如 cron 每 30 分钟执行一次，首次失败后约 30 分钟重试，约 60 分钟时第三次失败并自动禁用；实际执行时间取决于 cron 调度和每轮耗时。
 
@@ -221,9 +246,9 @@ App Store 使用独立的 `apple_rules.json`，可复制 [apple_rules.example.js
 
 所选渠道需要在 `.env` 中启用并填写凭据：飞书使用 `FEISHU_ENABLED=true`，TickTick 使用 `TODO_ENABLED=true`。更新通过飞书蓝色卡片或 TickTick 当天的全天待办送达。
 
-全部所选渠道成功后，程序只更新该项的 `version`。部分或全部渠道失败时保留原版本，下一轮再次向所选渠道发送；已成功的渠道在这种情况下也会再次收到通知。JSON 始终保持上述配置结构。
+全部所选渠道成功后，程序只更新该项的 `version`。部分或全部渠道失败时保留原版本，本轮补跑及后续轮次会再次向所选渠道发送；已成功的渠道在这种情况下也会再次收到通知。JSON 始终保持上述配置结构。
 
-单个应用的配置、查询或通知失败后继续检查其他项，失败记录进入本轮汇总告警。`apple_rules.json` 缺失时跳过 App Store 业务线，空对象表示当前没有监控项。暂停某个应用时设置 `"disabled": true`，恢复时改为 `false` 或删除该字段。App Store 的该开关用于手动暂停，失败重试继续沿用原有流程。
+单个应用的配置、查询或通知失败后继续检查其他项。两条业务线首遍执行结束后，仅补跑失败项；补跑仍然失败的记录进入本轮汇总告警。`apple_rules.json` 缺失时跳过 App Store 业务线，空对象表示当前没有监控项。暂停某个应用时设置 `"disabled": true`，恢复时改为 `false` 或删除该字段。App Store 的该开关用于手动暂停，失败重试继续沿用原有流程。
 
 ## 公共版本处理与通知接口
 
@@ -295,7 +320,7 @@ TICKTICK_ACCESS_TOKEN=your-access-token
 TICKTICK_PROJECT_ID=your-project-id
 ```
 
-启用后，GitHub Release 在下载及可选移动成功后创建一个上海时区当天的全天待办。TickTick 创建失败只记录日志，Release 继续按下载和移动结果更新 `last_tag`。App Store 通过规则中的 `notify` 选择此渠道，失败时保留原版本供下一轮重试。
+启用后，GitHub Release 在全部文件下载及可选转移成功后创建一个上海时区当天的全天待办。单文件与多文件使用相同格式：标题为 `仓库名 - tag`，正文为 `GitHub release monitor`。TickTick 创建失败只记录日志，Release 继续按下载和移动结果更新 `last_tag`；该类非阻断失败沿用原有处理方式。App Store 通过规则中的 `notify` 选择此渠道，失败时保留原版本供下一轮重试。
 
 ### 移动下载文件
 
@@ -303,17 +328,17 @@ TICKTICK_PROJECT_ID=your-project-id
 MOVE_TARGET_DIR=/path/to/target
 ```
 
-配置后，下载成功的文件会移动到目标目录。目标目录不存在时自动创建；同名目标文件已存在时拒绝覆盖，并将本次 Release 标记为失败。此时 `last_tag` 不会更新，下载文件保留在 `downloads/`，下一轮会重新处理该 Release。
+配置后，整组文件下载完成再转移到目标目录，目标目录不存在时自动创建。整组转移采用先复制、全部完成后删除源文件的方式；复制阶段失败时保留下载缓存，下一轮复用完整下载和内容相同的已转移文件。内容不同的同名目标文件会报错并保留原文件。本轮失败时保留 `last_tag`，下轮按同一组规则重试。
 
 ## GitHub Release 成功与失败判定
 
 只有以下步骤都成功时才更新对应仓库的 `last_tag`：
 
 1. 获取到 Release assets；
-2. LLM 成功选择文件；
-3. LLM 返回的 URL 确实属于当前 Release；
-4. 文件下载成功；
-5. 配置了文件移动时，移动成功。
+2. LLM 为每个筛选组各选出一个文件；
+3. 每个 URL 均属于当前 Release，数量与筛选组数量一致；
+4. 去重后的全部文件下载成功；
+5. 配置了文件移动时，整组转移成功。
 
 TickTick 是非阻断功能，不参与成功判定。飞书错误通知也不改变 Release 的处理结果。
 

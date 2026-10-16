@@ -1,8 +1,17 @@
 {
   "owner/repo-name": {
-    "extension": ".apk",
-    "include": ["arm64-v8a"],
-    "exclude": ["legacy"],
+    "filters": [
+      {
+        "extension": ".apk",
+        "include": ["arm64-v8a"],
+        "exclude": ["legacy"]
+      },
+      {
+        "extension": ".apk",
+        "include": ["armeabi-v7a"],
+        "exclude": ["legacy"]
+      }
+    ],
     "tag_contains": "phone",
     "last_tag": null,
     "disabled": false
