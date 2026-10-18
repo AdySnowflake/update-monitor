@@ -1,4 +1,4 @@
-"""整理 GitHub 和 App Store 规则文件的顶层顺序。"""
+"""排序并统一格式化 GitHub 和 App Store 规则文件。"""
 
 import json
 from pathlib import Path
@@ -39,15 +39,14 @@ def main() -> int:
             continue
         rules = load_rules(path)
         sorted_rules = sort_rules(rules, sort_key)
-        if list(rules) == list(sorted_rules):
-            print(f"规则已经有序: {path}")
+        formatted = json.dumps(sorted_rules, ensure_ascii=False, indent=2) + "\n"
+        if path.read_bytes() == formatted.encode("utf-8"):
+            print(f"规则已经有序且格式规范: {path}")
             continue
 
-        with path.open("w", encoding="utf-8") as file:
-            json.dump(sorted_rules, file, ensure_ascii=False, indent=2)
-            file.write("\n")
+        path.write_text(formatted, encoding="utf-8", newline="\n")
 
-        print(f"排序完成，共 {len(sorted_rules)} 项: {path}")
+        print(f"排序及格式化完成，共 {len(sorted_rules)} 项: {path}")
     return 0
 
 

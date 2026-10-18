@@ -187,13 +187,13 @@ LLM_FALLBACK_MODEL=your-fallback-model
 
 `repo_rules.json` 缺失时跳过 GitHub Release 业务线；JSON 无效时按业务线整体失败补跑一次。单仓库字段取值非法（如 `disabled` 不是布尔值）作为该仓库失败处理，其他仓库继续执行；补跑后仍失败的项按下述规则累计并告警。空对象 `{}` 表示暂时没有需要监控的仓库。
 
-需要整理两份规则文件的顺序时运行：
+需要排序并统一格式化两份规则文件时运行：
 
 ```bash
 uv run --locked python sort_repo_rules.py
 ```
 
-该脚本同时整理 `repo_rules.json` 和 `apple_rules.json`：GitHub 按仓库名（`/` 后面的部分）排序，App Store 按顶层监控项名称排序，均忽略字母大小写。仅调整顶层条目顺序，保留每项字段内容；尚未创建的规则文件自动跳过。
+该脚本同时整理 `repo_rules.json` 和 `apple_rules.json`：GitHub 按仓库名（`/` 后面的部分）排序，App Store 按顶层监控项名称排序，均忽略字母大小写。两份文件统一使用 UTF-8、两空格缩进、冒号后一个空格和文件末尾单个换行，中文直接保留。条目已经有序时也会修正格式，排序和格式均规范时跳过写入。保留每项字段及其值，尚未创建的规则文件自动跳过。
 
 ### 失败重试与自动禁用
 
@@ -383,7 +383,7 @@ ai/                       # 模型处理逻辑
 files/                    # 文件操作
 ├── download.py           # 流式下载与临时文件处理
 └── transfer.py           # 文件移动
-sort_repo_rules.py        # 同时整理 GitHub 和 App Store 规则顺序
+sort_repo_rules.py        # 同时排序并格式化 GitHub 和 App Store 规则
 .env.example              # 环境变量模板
 repo_rules.example.json   # GitHub Release 规则模板
 apple_rules.example.json  # App Store 规则模板
