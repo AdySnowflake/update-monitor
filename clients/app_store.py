@@ -1,4 +1,4 @@
-"""通过 Apple 查询接口获取 App Store 应用的名称与版本。"""
+"""通过 Apple 查询接口获取 App Store 应用的版本与链接。"""
 
 import re
 
@@ -8,7 +8,8 @@ from config import get_proxies
 from models import VersionInfo
 
 
-def fetch_app_version(app_id: str | int, country: str = "us") -> VersionInfo:
+def fetch_app_version(app_id: str | int, country: str = "us", *, name: str) -> VersionInfo:
+    """查询版本与链接，使用规则中传入的监控项名称。"""
     app_id = str(app_id)
     if not re.fullmatch(r"[0-9]+", app_id) or int(app_id) <= 0:
         raise ValueError("App Store app_id 应为正整数或数字字符串")
@@ -37,10 +38,7 @@ def fetch_app_version(app_id: str | int, country: str = "us") -> VersionInfo:
     )
     if app is None:
         raise ValueError(f"App Store {country} 区未找到应用 {app_id}")
-    name = app.get("trackName")
     version = app.get("version")
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("Apple 查询接口缺少有效的 trackName")
     if not isinstance(version, str) or not version.strip():
         raise ValueError("Apple 查询接口缺少有效的 version")
     url = app.get("trackViewUrl") or f"https://apps.apple.com/{country}/app/id{app_id}"

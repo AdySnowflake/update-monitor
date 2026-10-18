@@ -3,7 +3,7 @@
 Update Monitor 包含两条独立业务线：
 
 - **GitHub Release**：检查最新 Release，使用 OpenAI 兼容模型筛选 asset，下载、按需移动文件，并创建 TickTick 待办。
-- **App Store**：通过 Apple 查询接口获取应用名称和版本，与记录比较，变化时通过飞书或 TickTick 推送。
+- **App Store**：通过 Apple 查询接口获取版本，与记录比较，变化时使用规则中的名称通过飞书或 TickTick 推送。
 
 两条业务线各自维护规则文件，共用通知入口。每轮先执行两条业务线的完整检查，再补跑失败的仓库或应用一次，随后汇总仍然失败的错误、尝试生成 AI 错误报告，并通过飞书自定义机器人发送通知。
 
@@ -230,7 +230,7 @@ App Store 使用独立的 `apple_rules.json`，可复制 [apple_rules.example.js
 }
 ```
 
-外层名称由用户自定义，例如 `SenPlayer`、`我的播放器`；它用于标识监控项，查询时使用 `app_id`。通知中的应用名称来自 Apple 返回的 `trackName`。
+外层名称由用户自定义，例如 `SenPlayer`、`我的播放器`；它用于标识监控项，同时作为通知中的应用名称，查询时使用 `app_id`。
 
 监控项名称（如 `SenPlayer`）、`app_id` 和 `notify` 必填，其余字段均可选。示例将必填字段放在前面，可选字段放在后面。
 
@@ -252,7 +252,7 @@ App Store 使用独立的 `apple_rules.json`，可复制 [apple_rules.example.js
 
 ## 公共版本处理与通知接口
 
-`clients/app_store.py` 专门处理 Apple 查询接口，将 `trackName`、`version` 和 `trackViewUrl` 整理为 `VersionInfo(name, version, url)`。`workflows/apple.py` 负责读取 App Store 清单、调用查询以及保存版本。
+`clients/app_store.py` 专门处理 Apple 查询接口，将规则中传入的监控项名称与查询得到的 `version`、`trackViewUrl` 整理为 `VersionInfo(name, version, url)`。`workflows/apple.py` 负责读取 App Store 清单、传入监控项名称、调用查询以及保存版本。
 
 拿到版本信息之后，通过 `workflows/versions.py` 的 `process_version(info, previous_version, channels)` 统一比较版本和通知。比较采用字符串是否相同的判断。以后接入其他业务线时，各自负责获取信息和维护配置，再将名称、版本和链接交给这个公共函数。
 
@@ -364,7 +364,7 @@ config.py                 # 环境变量与项目根目录
 models.py                 # ReleaseInfo、VersionInfo 数据结构
 clients/                  # 外部服务查询与客户端
 ├── github.py             # GitHub Release 查询与 Tag 条件匹配
-├── app_store.py          # Apple 应用名称、版本和链接查询
+├── app_store.py          # Apple 应用版本和链接查询
 └── llm.py                # 主/备用 LLM 客户端
 notifications/            # 公共通知接口
 ├── dispatcher.py         # 消息结构、渠道注册与独立投递

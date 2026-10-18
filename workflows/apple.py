@@ -74,7 +74,7 @@ def run_apple_monitor(path: Path | None = None, *, targets: set[str] | None = No
                 logger.info("App Store 监控 %s 已禁用，跳过", key)
                 continue
             channels = _validate_rule(rule)
-            info = fetch_app_version(rule.get("app_id"), rule.get("country", "us"))
+            info = fetch_app_version(rule.get("app_id"), rule.get("country", "us"), name=key)
             previous_version = rule.get("version")
             version = process_version(
                 info, previous_version, channels, content="Update Monitor - App Store"
