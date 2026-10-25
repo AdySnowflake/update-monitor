@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from urllib.parse import quote
 
 import config
 from ai.file_selector import select_files
@@ -115,10 +116,11 @@ def run_release(owner: str, repo: str, tag: str, assets: list[dict]) -> dict:
             return {"success": 0, "error": "file_transfer_failed", "error_log": error_log}
 
     if config.TODO_ENABLED:
+        release_url = f"https://github.com/{full_repo}/releases/tag/{quote(tag, safe='')}"
         send_notification(
             Notification(
                 title=f"{repo} - {tag}",
-                content="GitHub release monitor",
+                content=f"GitHub release monitor\n{release_url}",
             ),
             ["ticktick"],
         )
