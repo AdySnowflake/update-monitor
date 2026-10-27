@@ -45,7 +45,7 @@ def send_card(title: str, content: str, *, template: str = "red") -> dict:
         config.FEISHU_WEBHOOK_URL,
         json=payload,
         proxies=config.get_proxies(),
-        timeout=10,
+        timeout=config.HTTP_TIMEOUT,
     )
     response.raise_for_status()
     result = response.json()

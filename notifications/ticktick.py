@@ -55,7 +55,7 @@ def create_todo(title: str, content: str = "") -> bool:
             json=task_data,
             headers=headers,
             proxies=config.get_proxies(),
-            timeout=10,
+            timeout=config.HTTP_TIMEOUT,
         )
         resp.raise_for_status()
         logger.info("待办创建成功")

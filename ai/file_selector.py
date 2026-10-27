@@ -1,6 +1,5 @@
 import json
 import logging
-import time
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import JsonOutputParser
@@ -49,7 +48,7 @@ def build_chain(llm: BaseChatModel):
 
 
 def _invoke_with_retry(role: str, input_data: dict, max_retries: int = 2) -> dict:
-    """创建指定用途的客户端并带退避重试调用。"""
+    """调用失败后立即重试，默认最多尝试三次。"""
     total_attempts = max_retries + 1
     chain = build_chain(get_llm_client(role))
 
@@ -59,12 +58,10 @@ def _invoke_with_retry(role: str, input_data: dict, max_retries: int = 2) -> dic
         except Exception as error:
             if attempt == total_attempts:
                 raise
-            wait = 2 ** (attempt - 1)
             logger.warning(
-                f"LLM {role!r} 调用失败，{wait}s 后重试 "
+                f"LLM {role!r} 调用失败，立即重试 "
                 f"({attempt}/{total_attempts}): {error}"
             )
-            time.sleep(wait)
 
 
 def select_files(assets: list[dict], filters: list[dict]) -> dict:

@@ -2,9 +2,8 @@
 
 import logging
 
-import requests
-
-from config import get_github_headers, get_proxies
+from clients.http import get_query_response
+from config import get_github_headers
 from models import ReleaseInfo
 
 logger = logging.getLogger(__name__)
@@ -19,18 +18,13 @@ def fetch_latest_release(
     url = f"{GITHUB_API}/repos/{owner}/{repo}/releases/latest"
     logger.info(f"检查仓库: {owner}/{repo}")
 
-    resp = requests.get(
-        url,
-        headers=get_github_headers(),
-        timeout=10,
-        proxies=get_proxies(),
-    )
-    if resp.status_code == 404:
-        logger.warning(f"仓库 {owner}/{repo} 无 release")
-        return None
-    resp.raise_for_status()
-
-    data = resp.json()
+    with get_query_response(
+        url, headers=get_github_headers(), allowed_statuses=(404,),
+    ) as response:
+        if response.status_code == 404:
+            logger.warning(f"仓库 {owner}/{repo} 无 release")
+            return None
+        data = response.json()
     if not isinstance(data, dict):
         raise ValueError("GitHub 查询接口返回应为对象")
     tag = data.get("tag_name")

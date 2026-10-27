@@ -13,6 +13,7 @@ _move_target_dir = os.getenv("MOVE_TARGET_DIR")
 MOVE_TARGET_DIR = Path(_move_target_dir).expanduser() if _move_target_dir else None
 
 # HTTP
+HTTP_TIMEOUT = (3, 3)  # 非 LLM 请求的连接、读取超时，单位为秒
 HTTP_PROXY = os.getenv("HTTP_PROXY")
 HTTPS_PROXY = os.getenv("HTTPS_PROXY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -26,9 +27,7 @@ LLM_FALLBACK_BASE_URL = os.getenv("LLM_FALLBACK_BASE_URL")
 LLM_FALLBACK_API_KEY = os.getenv("LLM_FALLBACK_API_KEY")
 LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL")
 
-LLM_REQUEST_TIMEOUT_SECONDS = float(
-    os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "30")
-)
+LLM_READ_TIMEOUT_SECONDS = 10  # 连接沿用 HTTP_TIMEOUT，读取包含等待模型回复
 
 # 飞书
 FEISHU_ENABLED = os.getenv("FEISHU_ENABLED", "false").lower() == "true"

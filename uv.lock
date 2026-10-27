@@ -494,6 +494,7 @@ name = "update-monitor"
 version = "1.2.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "python-dotenv" },
@@ -503,6 +504,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "python-dotenv" },

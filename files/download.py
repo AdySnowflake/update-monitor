@@ -3,7 +3,7 @@ from pathlib import Path
 
 import requests
 
-from config import DOWNLOAD_DIR, get_proxies
+from config import DOWNLOAD_DIR, HTTP_TIMEOUT, get_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def download_file(url: str, download_dir: Path | None = None) -> Path:
             url,
             stream=True,
             proxies=get_proxies(),
-            timeout=(10, 60),
+            timeout=HTTP_TIMEOUT,
         ) as resp:
             resp.raise_for_status()
 

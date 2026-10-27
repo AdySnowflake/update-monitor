@@ -2,9 +2,7 @@
 
 import re
 
-import requests
-
-from config import get_proxies
+from clients.http import get_query_response
 from models import VersionInfo
 
 
@@ -18,14 +16,11 @@ def fetch_app_version(app_id: str | int, country: str = "us", *, name: str) -> V
         raise ValueError("App Store country 应为两位地区代码，例如 us 或 cn")
     country = country.lower()
 
-    response = requests.get(
+    with get_query_response(
         "https://itunes.apple.com/lookup",
         params={"id": app_id, "country": country},
-        proxies=get_proxies(),
-        timeout=(10, 30),
-    )
-    response.raise_for_status()
-    data = response.json()
+    ) as response:
+        data = response.json()
     if not isinstance(data, dict) or not isinstance(data.get("results"), list):
         raise ValueError("Apple 查询接口返回了无效的 results")
     app = next(

@@ -10,4 +10,5 @@ dependencies = [
     "requests",
     "python-dotenv",
     "tzdata",
+    "httpx>=0.28.1",
 ]

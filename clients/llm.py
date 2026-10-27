@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+import httpx
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
@@ -41,5 +42,7 @@ def get_llm_client(role: str) -> ChatOpenAI:
         api_key=SecretStr(api_key),
         temperature=0,
         max_retries=0,
-        timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+        timeout=httpx.Timeout(
+            config.HTTP_TIMEOUT[0], read=config.LLM_READ_TIMEOUT_SECONDS
+        ),
     )
