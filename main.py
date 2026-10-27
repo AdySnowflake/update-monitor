@@ -9,10 +9,9 @@ sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 import config
 from ai.error_analysis import generate_error_report
 from notifications.alerts import send_error_notification
-from workflows.apple import RULES_FILE as APPLE_RULES_FILE
-from workflows.apple import run_apple_monitor
-from workflows.github import finalize_github_failures, run_github_monitor
-from workflows.github_rules import RULES_FILE as REPO_RULES_FILE
+from workflows.apple import apple_monitor
+from workflows.github import github_monitor
+from workflows.monitor import run_monitors
 
 NOISY_LOGGERS = ("httpcore", "httpx", "openai", "urllib3")
 
@@ -73,37 +72,10 @@ def _notify_failures(error_records: list[dict]) -> None:
     send_error_notification(error_records, ai_report)
 
 
-def _run_workflow(name, run, targets=None) -> list[dict]:
-    """隔离业务线异常；配置读取等整体错误由下一遍重跑该业务线。"""
-    try:
-        return run(targets=targets)
-    except Exception as error:
-        logger.exception("%s 业务线执行失败", name)
-        return [{"stage": name, "error": type(error).__name__, "message": str(error)}]
-
-
 def main():
     """先执行全部业务线，再补跑失败项，最后汇总仍然失败的错误。"""
     setup_logging()
-    workflows = (
-        ("GitHub Release", REPO_RULES_FILE, run_github_monitor),
-        ("App Store", APPLE_RULES_FILE, run_apple_monitor),
-    )
-    retry_queue = []
-    for name, rules_file, run in workflows:
-        if not rules_file.exists():
-            logger.info("%s 配置文件尚未创建，跳过: %s", name, rules_file.name)
-            continue
-        records = _run_workflow(name, run)
-        if records:
-            retry_queue.append((name, run, records))
-
-    failures = []
-    for name, run, records in retry_queue:
-        targets = {record.get("repository") or record.get("target") for record in records}
-        logger.info("补跑 %s 的失败项", name)
-        failures.extend(_run_workflow(name, run, None if None in targets else targets))
-    _notify_failures(finalize_github_failures(failures))
+    _notify_failures(run_monitors((github_monitor(), apple_monitor())))
 
 
 if __name__ == "__main__":

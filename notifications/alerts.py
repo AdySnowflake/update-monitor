@@ -17,10 +17,12 @@ def send_error_notification(
         repository = (
             record.get("repository")
             or record.get("target")
+            or record.get("source_name")
             or record.get("stage")
             or "未知目标"
         )
-        tag = f" @ {record['tag']}" if record.get("tag") else ""
+        version = record.get("version") or record.get("tag")
+        tag = f" @ {version}" if version else ""
         label = "故障对象" if len(error_records) == 1 else f"故障 {index}"
         error_text = str(
             record.get("error_log")
@@ -35,8 +37,8 @@ def send_error_notification(
 
         if record.get("auto_disabled"):
             section += (
-                "\n\n**自动禁用**：连续失败 3 轮，已暂停该仓库。\n\n"
-                "**恢复方法**：修复问题后，将 repo_rules.json 中该仓库的 "
+                f"\n\n**自动禁用**：连续失败 {record['failure_count']} 轮，已暂停该监控项。\n\n"
+                f"**恢复方法**：修复问题后，将 {record['rules_file']} 中该监控项的 "
                 "`disabled` 改为 `false` 或删除该字段。"
             )
         sections.append(section)

@@ -1,14 +1,11 @@
 import hashlib
 import json
 import logging
-from urllib.parse import quote
 
 import config
 from ai.file_selector import select_files
 from files.download import download_file
 from files.transfer import move_downloaded_files
-from notifications import Notification, send_notification
-from workflows.github_rules import get_repo_rules
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +43,8 @@ class StepLogger:
         self.failure_reason = text
 
 
-def run_release(owner: str, repo: str, tag: str, assets: list[dict]) -> dict:
-    """按筛选组选择文件，整组下载、转移成功后发送一条待办。"""
+def run_release(owner: str, repo: str, tag: str, assets: list[dict], filters: list[dict]) -> dict:
+    """按筛选组选择、下载和转移文件；通知与状态提交由公共流程负责。"""
     full_repo = f"{owner}/{repo}"
     total_steps = 4
     logger.info("开始处理 API release: %s @ %s", full_repo, tag)
@@ -62,7 +59,10 @@ def run_release(owner: str, repo: str, tag: str, assets: list[dict]) -> dict:
             step.log(f"{asset['name']} — {asset['browser_download_url']}")
 
     with StepLogger(2, total_steps, "加载仓库筛选组") as step:
-        filters = get_repo_rules(full_repo)["filters"]
+        if not isinstance(filters, list) or not filters or any(
+            not isinstance(group, dict) for group in filters
+        ):
+            raise ValueError("filters 必填，应为非空对象数组；单文件筛选也应放入一组")
         step.log(json.dumps(filters, ensure_ascii=False))
 
     with StepLogger(3, total_steps, "AI 按组选择文件") as step:
@@ -114,16 +114,6 @@ def run_release(owner: str, repo: str, tag: str, assets: list[dict]) -> dict:
             error_log = f"{full_repo} @ {tag} 文件转移失败: {type(error).__name__}: {error}"
             logger.error(error_log)
             return {"success": 0, "error": "file_transfer_failed", "error_log": error_log}
-
-    if config.TODO_ENABLED:
-        release_url = f"https://github.com/{full_repo}/releases/tag/{quote(tag, safe='')}"
-        send_notification(
-            Notification(
-                title=f"{repo} - {tag}",
-                content=f"GitHub release monitor\n{release_url}",
-            ),
-            ["ticktick"],
-        )
 
     logger.info("流程完成: %s @ %s，共 %s 个文件", full_repo, tag, len(final_filepaths))
     return {

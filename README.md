@@ -1,11 +1,13 @@
 # Update Monitor
 
-Update Monitor 包含两条独立业务线：
+Update Monitor 通过同一套监控流程处理两个来源：
 
 - **GitHub Release**：检查最新 Release，使用 OpenAI 兼容模型筛选 asset，下载、按需移动文件，并创建 TickTick 待办。
-- **App Store**：通过 Apple 查询接口获取版本，与记录比较，变化时使用规则中的名称通过飞书或 TickTick 推送。
+- **App Store**：通过 Apple 查询接口获取版本，与记录比较，变化时使用规则中的名称创建 TickTick 待办。
 
-两条业务线各自维护规则文件，共用通知入口。每轮先执行两条业务线的完整检查，再补跑失败的仓库或应用一次，随后汇总仍然失败的错误、尝试生成 AI 错误报告，并通过飞书自定义机器人发送通知。
+两条业务线保留各自的规则文件与业务动作，共用查询后的版本检测、状态存储、失败补跑和通知模块。成功更新固定推送 TickTick，错误告警固定发送飞书，规则中不选择通知渠道。每轮先执行两条业务线，再补跑失败的仓库或应用一次，随后汇总仍需告警的错误、尝试生成 AI 错误报告，并通过飞书自定义机器人发送通知。
+
+每个监控项依次执行：读取并校验规则 → 查询当前版本 → 判断版本变化与来源筛选条件 → 执行业务动作 → 发送成功通知 → 保存版本。版本未变、被筛选跳过或没有可用版本时，不执行动作和通知。GitHub 的业务动作是筛选、下载和按需移动文件；App Store 无需文件处理。
 
 程序每次执行一轮检查，每轮包含首遍执行和一次失败项补跑，适合由 cron 或其他任务调度器定时运行。
 
@@ -15,7 +17,7 @@ Update Monitor 包含两条独立业务线：
 读取 repo_rules.json
         │
         ▼
-逐个查询 GitHub 最新 Release（单仓库失败不阻断其他仓库）
+逐个查询并处理 GitHub 最新 Release（单仓库失败不阻断其他仓库）
         │
         ├─ tag 与 last_tag 相同 ──────────────► 跳过
         │
@@ -36,10 +38,10 @@ Update Monitor 包含两条独立业务线：
 整组转移到目标目录（可选，支持部分成功后重试）
         │
         ▼
-创建 TickTick 待办（可选、非阻断）
+创建 TickTick 待办（启用时须成功）
         │
         ▼
-整组成功后更新 last_tag
+文件处理和已启用的通知均成功后更新 last_tag
 ```
 
 每轮在两条业务线首遍执行完毕后收尾：
@@ -62,6 +64,8 @@ Update Monitor 包含两条独立业务线：
 ```
 
 补跑会重新执行失败监控项的查询与处理流程，已成功项保留首遍结果。规则文件整体读取失败时，补跑对应业务线。GitHub 的失败计数和自动禁用在补跑结束后处理，同一仓库每轮最多累计一次失败。
+
+GitHub 与 App Store 的版本查询均无独立的 HTTP 重试循环：每轮首遍查询失败后补跑一次，因此持续网络故障时每项每轮最多查询两次。GitHub 连续失败三轮后自动禁用，与一次请求尝试三次不同；App Store 持续失败时继续下一轮监控。LLM 文件筛选另有每个模型最多三次调用的退避重试，详见下文。
 
 AI 错误分析与飞书发送是两条解耦的路径。即使 LLM 因 API Key 余额耗尽、鉴权失败或服务不可用而无法分析，程序仍会直接发送原始错误通知。文件选择阶段已经确认不可用的模型不会被错误分析再次调用。
 
@@ -222,7 +226,6 @@ App Store 使用独立的 `apple_rules.json`，可复制 [apple_rules.example.js
 {
   "SenPlayer": {
     "app_id": "6443975850",
-    "notify": ["feishu", "ticktick"],
     "country": "us",
     "version": "6.2.3",
     "disabled": false
@@ -232,35 +235,34 @@ App Store 使用独立的 `apple_rules.json`，可复制 [apple_rules.example.js
 
 外层名称由用户自定义，例如 `SenPlayer`、`我的播放器`；它用于标识监控项，同时作为通知中的应用名称，查询时使用 `app_id`。
 
-监控项名称（如 `SenPlayer`）、`app_id` 和 `notify` 必填，其余字段均可选。示例将必填字段放在前面，可选字段放在后面。
+监控项名称（如 `SenPlayer`）和 `app_id` 必填，其余字段均可选。示例将必填字段放在前面，可选字段放在后面。
 
 | 字段 | 类型 | 是否必填 | 说明与省略行为 |
 | --- | --- | --- | --- |
 | `app_id` | string/number | 必填 | Apple 应用 ID，支持正整数或数字字符串 |
-| `notify` | string[] | 必填 | 明确指定至少一个通知渠道；支持 `feishu`、`ticktick`，可选择一个或同时选择 |
 | `country` | string | 可选 | App Store 两位地区代码，省略时为 `"us"`；`"cn"` 表示中国区 |
-| `version` | string/null | 可选，程序维护 | 已通知的版本；省略或 `null` 时首次推送当前版本，全部渠道送达后自动更新 |
+| `version` | string/null | 可选，程序维护 | 最后完成处理的版本；省略或 `null` 时首次处理当前版本，TickTick 启用时须送达后更新 |
 | `disabled` | boolean | 可选 | 省略时为 `false`；`true` 时跳过该项的查询、通知和版本更新 |
 
 填入上述 `version: "6.2.3"` 后，查询仍为 `6.2.3` 时跳过；查询变为其他版本时，通知标题为 `应用名称 - 版本号`，正文为 `Update Monitor - App Store` 和 App Store 链接。规则中填写的版本作为你的监控起点，示例值仅供参考。
 
-所选渠道需要在 `.env` 中启用并填写凭据：飞书使用 `FEISHU_ENABLED=true`，TickTick 使用 `TODO_ENABLED=true`。更新通过飞书蓝色卡片或 TickTick 当天的全天待办送达。
+在 `.env` 中使用 `TODO_ENABLED=true` 启用成功通知并填写 TickTick 凭据，更新以当天的全天待办送达。使用 `FEISHU_ENABLED=true` 启用错误告警并填写飞书凭据。两者独立控制，不会因某个渠道关闭而改走另一渠道。
 
-全部所选渠道成功后，程序只更新该项的 `version`。部分或全部渠道失败时保留原版本，本轮补跑及后续轮次会再次向所选渠道发送；已成功的渠道在这种情况下也会再次收到通知。JSON 始终保持上述配置结构。
+TickTick 启用时，送达后更新该项的 `version`；投递失败保留原版本，供本轮补跑及后续轮次重试。关闭 TickTick 时不发送成功通知，仍保存查询到的版本，之后启用不会补发关闭期间已保存的版本。旧规则中的 `notify` 字段已停止使用，可以删除；保留该字段不影响运行，也不会把成功消息发到飞书。
 
 单个应用的配置、查询或通知失败后继续检查其他项。两条业务线首遍执行结束后，仅补跑失败项；补跑仍然失败的记录进入本轮汇总告警。`apple_rules.json` 缺失时跳过 App Store 业务线，空对象表示当前没有监控项。暂停某个应用时设置 `"disabled": true`，恢复时改为 `false` 或删除该字段。App Store 的该开关用于手动暂停，失败重试继续沿用原有流程。
 
-## 公共版本处理与通知接口
+## 公共监控流程与通知接口
 
-`clients/app_store.py` 专门处理 Apple 查询接口，将规则中传入的监控项名称与查询得到的 `version`、`trackViewUrl` 整理为 `VersionInfo(name, version, url)`。`workflows/apple.py` 负责读取 App Store 清单、传入监控项名称、调用查询以及保存版本。
+`clients/github.py` 和 `clients/app_store.py` 只负责来源接口查询和响应校验，分别返回 `ReleaseInfo`、`VersionInfo`，不接收历史版本、不判断是否更新。两种数据都提供 `name`、`version`、`url`，GitHub 另外保留仓库信息和 assets。
 
-拿到版本信息之后，通过 `workflows/versions.py` 的 `process_version(info, previous_version, channels)` 统一比较版本和通知。比较采用字符串是否相同的判断。以后接入其他业务线时，各自负责获取信息和维护配置，再将名称、版本和链接交给这个公共函数。
+`workflows/versions.py` 的 `detect_version()` 使用字符串相等判断版本变化，明确返回变化、未变、被筛选跳过或无可用版本四种结果，不发送通知。GitHub 的 `tag_contains` 条件由 GitHub 适配层提供，不进入客户端。
 
-`notifications/` 提供 `Notification(title, content, level)` 和 `send_notification(message, channels)`。业务线组织通知内容、指定渠道，公共入口负责独立投递并返回各渠道的成功状态。`level` 用于选择飞书卡片颜色：更新为蓝色，错误为红色。TickTick 接收相同消息的标题和正文。
+`workflows/monitor.py` 按 `MonitorSpec` 执行公共流程，负责禁用判断、规则校验、检测、业务动作、通知和版本提交，并在全部业务线首遍执行后仅补跑失败项。`workflows/rules.py` 的 `RuleStore` 统一使用临时文件与原子替换保存规则。GitHub、Apple 适配层只声明查询、筛选、动作和策略。
 
-GitHub Release 的待办和汇总错误告警均使用这个通知入口，自动禁用说明合并在汇总告警中。GitHub 的待办失败继续按原有的非阻断策略处理；App Store 以全部所选渠道送达作为完成条件。
+`notifications/updates.py` 统一构造成功消息：标题为 `名称 - 版本号`，正文为业务线提供的文字和来源链接，固定投递 TickTick。`notifications/alerts.py` 统一构造汇总错误和自动禁用说明，固定投递飞书红色卡片。底层 `dispatcher.py` 负责调用各渠道并隔离投递异常，业务线无需组装消息或选择渠道。
 
-新增通知渠道时，实现接收 `Notification`、返回布尔值的发送函数，并加入 `NOTIFIERS` 注册表。业务线可以直接在渠道列表中使用注册名称。
+两条业务线的成功判定统一：TickTick 启用时，业务动作和通知均成功才保存版本；投递失败保留旧版本，进入公共补跑与告警流程。TickTick 未启用时跳过通知，按业务动作结果保存版本。GitHub 连续失败三轮自动禁用，只在首次失败与禁用时告警；App Store 持续监控，每轮补跑后仍失败则告警。失败计数和告警筛选统一由公共流程按策略执行。
 
 ## 配置飞书通知
 
@@ -272,7 +274,7 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/...
 FEISHU_SIGNING_SECRET=your-signing-secret
 ```
 
-飞书通知由 `notifications/feishu.py` 使用项目已有的 `requests` 依赖实现，消息类型为交互式卡片。版本更新使用蓝色卡片，以下错误通知使用红色卡片。
+飞书通知由 `notifications/feishu.py` 使用项目已有的 `requests` 依赖实现，错误通知使用红色交互式卡片。版本更新成功消息只发 TickTick。
 
 告警使用红色卡片，标题固定为 `Update Monitor 告警`，每轮运行只汇总发送一条：
 
@@ -320,7 +322,7 @@ TICKTICK_ACCESS_TOKEN=your-access-token
 TICKTICK_PROJECT_ID=your-project-id
 ```
 
-启用后，GitHub Release 在全部文件下载及可选转移成功后创建一个上海时区当天的全天待办。单文件与多文件使用相同格式：标题为 `仓库名 - tag`，正文为 `GitHub release monitor`。TickTick 创建失败只记录日志，Release 继续按下载和移动结果更新 `last_tag`；该类非阻断失败沿用原有处理方式。App Store 通过规则中的 `notify` 选择此渠道，失败时保留原版本供下一轮重试。
+启用后，两条业务线的成功更新都创建上海时区当天的全天待办，正文末尾附上来源链接。GitHub 标题为 `仓库名 - tag`，正文为 `GitHub release monitor`；App Store 标题为 `应用名称 - 版本号`，正文为 `Update Monitor - App Store`。两边创建待办失败时都保留原版本，供补跑和后续轮次重试。
 
 ### 移动下载文件
 
@@ -339,8 +341,9 @@ MOVE_TARGET_DIR=/path/to/target
 3. 每个 URL 均属于当前 Release，数量与筛选组数量一致；
 4. 去重后的全部文件下载成功；
 5. 配置了文件移动时，整组转移成功。
+6. 启用了 TickTick 时，成功创建更新待办。
 
-TickTick 是非阻断功能，不参与成功判定。飞书错误通知也不改变 Release 的处理结果。
+TickTick 关闭时不参与成功判定；启用后投递失败会阻止版本推进。飞书错误通知不改变 Release 的处理结果。
 
 一轮中某个仓库失败不会阻止其他仓库继续处理。GitHub 403、网络失败、无效响应及后续处理错误都会汇总进入错误分析和通知流程；仓库确实没有 Release 的 404 响应仍视为正常跳过。
 
@@ -363,20 +366,22 @@ main.py                   # 日志初始化、业务线调度和汇总告警
 config.py                 # 环境变量与项目根目录
 models.py                 # ReleaseInfo、VersionInfo 数据结构
 clients/                  # 外部服务查询与客户端
-├── github.py             # GitHub Release 查询与 Tag 条件匹配
+├── github.py             # GitHub 最新 Release 查询
 ├── app_store.py          # Apple 应用版本和链接查询
 └── llm.py                # 主/备用 LLM 客户端
 notifications/            # 公共通知接口
 ├── dispatcher.py         # 消息结构、渠道注册与独立投递
+├── updates.py            # 成功更新的统一格式与 TickTick 投递策略
 ├── feishu.py             # 飞书卡片、签名和发送
 ├── ticktick.py           # TickTick 待办创建
 └── alerts.py             # 汇总错误与自动禁用告警内容
 workflows/                # 业务流程
-├── github.py             # GitHub 仓库轮询与 Release 处理
-├── github_rules.py       # 仓库规则、版本记录、失败计数和禁用状态
-├── release.py            # asset 筛选、下载、移动与成功通知
-├── apple.py              # App Store 清单、查询编排与版本保存
-└── versions.py           # 获取版本后的公共比较与更新通知
+├── monitor.py            # 公共监控、补跑、失败计数和禁用策略
+├── rules.py              # 公共规则存储与原子状态更新
+├── github.py             # GitHub 查询、Tag 条件与业务策略适配
+├── release.py            # asset 筛选、下载与移动
+├── apple.py              # App Store 查询与业务策略适配
+└── versions.py           # 公共版本检测与明确的跳过状态
 ai/                       # 模型处理逻辑
 ├── file_selector.py      # asset 筛选、重试和模型回退
 └── error_analysis.py     # 汇总错误分析
@@ -400,7 +405,7 @@ tests/                    # 核心业务流程测试
 uv run --locked python -m unittest discover -s tests -v
 ```
 
-保留 4 个核心业务测试：GitHub 连续失败时的告警与自动禁用，以及 App Store 的版本保存与去重、投递失败后重试和禁用跳过。外部查询和通知使用 mock，规则文件在临时目录中实际读写。
+保留 5 个核心业务测试：两来源成功后保存版本且不重复通知、通知失败保留版本并可恢复且错误只发飞书、网络故障只补跑失败项、GitHub 三轮失败后禁用但 App Store 持续监控，以及 Tag 筛选跳过时不下载、不通知、不推进版本。外部查询和通知使用 mock，规则文件在临时目录中实际读写。
 
 ## 安全说明
 

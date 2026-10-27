@@ -1,4 +1,4 @@
-"""GitHub 最新 Release 查询与 Tag 条件匹配。"""
+"""查询 GitHub 最新 Release，不参与版本比较与规则筛选。"""
 
 import logging
 
@@ -11,16 +11,11 @@ logger = logging.getLogger(__name__)
 GITHUB_API = "https://api.github.com"
 
 
-def check_latest_release(
+def fetch_latest_release(
     owner: str,
     repo: str,
-    last_tag: str | None,
-    tag_contains: str | None = None,
 ) -> ReleaseInfo | None:
-    """检查单个仓库是否有符合 Tag 关键词条件的新 release。"""
-    if tag_contains is not None and not isinstance(tag_contains, str):
-        raise ValueError("tag_contains 字段应为字符串或 null")
-
+    """返回当前最新 Release；404 表示没有可用 Release。"""
     url = f"{GITHUB_API}/repos/{owner}/{repo}/releases/latest"
     logger.info(f"检查仓库: {owner}/{repo}")
 
@@ -36,22 +31,13 @@ def check_latest_release(
     resp.raise_for_status()
 
     data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("GitHub 查询接口返回应为对象")
     tag = data.get("tag_name")
-    if not tag:
+    if not isinstance(tag, str) or not tag.strip():
         raise ValueError("latest release 缺少 tag_name")
-
-    if tag == last_tag:
-        logger.info(f"仓库 {owner}/{repo} 无新版本（当前: {tag}）")
-        return None
-
-    if tag_contains and tag_contains not in tag:
-        logger.info(
-            "仓库 %s/%s 的 Tag %r 未包含关键词 %r，跳过",
-            owner, repo, tag, tag_contains,
-        )
-        return None
-
     assets = data.get("assets", [])
-    logger.info(f"发现新版本: {owner}/{repo} @ {tag}（{len(assets)} 个 assets）")
+    if not isinstance(assets, list) or any(not isinstance(asset, dict) for asset in assets):
+        raise ValueError("latest release 的 assets 应为对象数组")
 
     return ReleaseInfo(owner=owner, repo=repo, tag=tag, assets=assets)
