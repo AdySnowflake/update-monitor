@@ -10,6 +10,7 @@ from notifications.dispatcher import Notification, send_notification
 @dataclass(frozen=True)
 class UpdateNotification:
     content: str
+    include_url: bool = True
 
 
 def notify_update(info: ReleaseInfo | VersionInfo, policy: UpdateNotification) -> dict[str, bool]:
@@ -17,7 +18,7 @@ def notify_update(info: ReleaseInfo | VersionInfo, policy: UpdateNotification) -
     if not config.TODO_ENABLED:
         return {}
     content = policy.content
-    if info.url:
+    if policy.include_url and info.url:
         content += f"\n{info.url}"
     results = send_notification(
         Notification(title=f"{info.name} - {info.version}", content=content),

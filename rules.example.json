@@ -1,0 +1,7 @@
+{
+  "Example App": {
+    "url": "https://example.com/version",
+    "notification_content": "https://example.com/download",
+    "version": "1.2.3"
+  }
+}

@@ -1,10 +1,11 @@
-"""排序并统一格式化 GitHub 和 App Store 规则文件。"""
+"""排序并统一格式化各来源规则文件。"""
 
 import json
 from pathlib import Path
 
-RULES_FILE = Path(__file__).resolve().parent / "repo_rules.json"
-APPLE_RULES_FILE = RULES_FILE.with_name("apple_rules.json")
+REPO_RULES_FILE = Path(__file__).resolve().parent / "repo_rules.json"
+APPLE_RULES_FILE = REPO_RULES_FILE.with_name("apple_rules.json")
+RULES_FILE = REPO_RULES_FILE.with_name("rules.json")
 
 
 def repository_sort_key(full_name: str) -> tuple[str, str, str]:
@@ -31,8 +32,9 @@ def load_rules(path: Path) -> dict:
 
 def main() -> int:
     for path, sort_key in (
-        (RULES_FILE, repository_sort_key),
+        (REPO_RULES_FILE, repository_sort_key),
         (APPLE_RULES_FILE, lambda name: (name.casefold(), name)),
+        (RULES_FILE, lambda name: (name.casefold(), name)),
     ):
         if not path.exists():
             print(f"配置文件尚未创建，跳过: {path}")

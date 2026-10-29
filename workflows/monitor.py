@@ -35,7 +35,7 @@ class MonitorSpec:
     rules_file: Path
     version_field: str
     fetch: Callable[[str, dict], UpdateInfo | None]
-    notification: UpdateNotification
+    notification: UpdateNotification | Callable[[UpdateInfo, dict], UpdateNotification]
     validate: Callable[[str, dict], None]
     accepts: Callable[[UpdateInfo, dict], bool]
     process: Callable[[UpdateInfo, dict], None]
@@ -133,7 +133,10 @@ def run_monitor(spec: MonitorSpec, *, targets: set[str] | None = None) -> list[d
             stage = "processing"
             spec.process(info, rule)
             stage = "notification"
-            notify_update(info, spec.notification)
+            notification = (
+                spec.notification(info, rule) if callable(spec.notification) else spec.notification
+            )
+            notify_update(info, notification)
             stage = "state"
             store.update(key, {spec.version_field: info.version, **release_state}, remove=FAILURE_FIELDS)
         except Exception as error:

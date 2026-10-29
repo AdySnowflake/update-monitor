@@ -12,6 +12,7 @@ from notifications.alerts import send_error_notification
 from workflows.apple import apple_monitor
 from workflows.github import github_monitor
 from workflows.monitor import run_monitors
+from workflows.update_release import update_release_monitor
 
 NOISY_LOGGERS = ("httpcore", "httpx", "openai", "urllib3")
 
@@ -75,7 +76,7 @@ def _notify_failures(error_records: list[dict]) -> None:
 def main():
     """先执行全部业务线，再补跑失败项，最后汇总仍然失败的错误。"""
     setup_logging()
-    _notify_failures(run_monitors((github_monitor(), apple_monitor())))
+    _notify_failures(run_monitors((github_monitor(), apple_monitor(), update_release_monitor())))
 
 
 if __name__ == "__main__":

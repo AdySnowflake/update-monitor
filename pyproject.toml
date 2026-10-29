@@ -1,7 +1,7 @@
 [project]
 name = "update-monitor"
 version = "1.2.0"
-description = "监控 GitHub Release 和 App Store 更新，按需下载文件并发送通知"
+description = "监控 GitHub Release、App Store 和通用 HTTP 版本接口，按需下载文件并发送通知"
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
 dependencies = [
