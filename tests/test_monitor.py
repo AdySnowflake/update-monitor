@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import requests
 
-from models import ReleaseInfo, VersionInfo
+from models import ReleaseInfo, VersionInfo, parse_release_date
 from notifications.alerts import send_error_notification
 from workflows.apple import apple_monitor
 from workflows.github import github_monitor
@@ -25,7 +25,7 @@ class MonitorTests(unittest.TestCase):
             "owner/repo": {"filters": [{}], "last_tag": "1"},
         }))
         self.apple_path.write_text(json.dumps({
-            "App": {"app_id": "123", "version": "1"},
+            "App": {"app_id": "123", "version": "1", "release_date": "2026-10-27T00:00:00Z"},
         }))
         self.specs = [github_monitor(self.github_path), apple_monitor(self.apple_path)]
         self.github = self.enterContext(patch(
@@ -33,7 +33,9 @@ class MonitorTests(unittest.TestCase):
             return_value=ReleaseInfo("owner", "repo", "2", []),
         ))
         self.apple = self.enterContext(patch(
-            "workflows.apple.fetch_app_version", return_value=VersionInfo("App", "2"),
+            "workflows.apple.fetch_app_version", return_value=VersionInfo(
+                "App", "2", release_date=parse_release_date("2026-10-28T00:00:00Z"),
+            ),
         ))
         self.process = self.enterContext(patch(
             "workflows.github.run_release", return_value={"success": 1},
@@ -65,6 +67,7 @@ class MonitorTests(unittest.TestCase):
         with self.assertLogs("workflows.monitor", level="ERROR"):
             failures = run_monitors(self.specs)
         self.assert_versions("1")
+        self.assertEqual(RuleStore(self.apple_path).load()["App"]["release_date"], "2026-10-27T00:00:00Z")
         self.assertEqual({record["source"] for record in failures}, {"github", "app_store"})
         self.assertTrue(all(record["stage"] == "notification" for record in failures))
         self.assertEqual(self.send.call_count, 4)  # 两个来源各首遍加一次补跑
@@ -77,6 +80,7 @@ class MonitorTests(unittest.TestCase):
         self.send.return_value = {"ticktick": True}
         self.assertEqual(run_monitors(self.specs), [])
         self.assert_versions("2")
+        self.assertEqual(RuleStore(self.apple_path).load()["App"]["release_date"], "2026-10-28T00:00:00+00:00")
         self.assertNotIn("consecutive_failures", RuleStore(self.github_path).load()["owner/repo"])
 
     def test_network_failure_retries_only_failed_items_after_both_sources_run(self):
@@ -104,7 +108,7 @@ class MonitorTests(unittest.TestCase):
                 attempts[name] += 1
                 if attempts[name] == 1:
                     raise requests.Timeout("timeout")
-            return VersionInfo(name, "2")
+            return VersionInfo(name, "2", release_date=parse_release_date("2026-10-28T00:00:00Z"))
 
         self.github.side_effect = fetch_github
         self.apple.side_effect = fetch_apple
@@ -138,3 +142,25 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(RuleStore(self.github_path).load()["owner/repo"]["last_tag"], "1")
         self.process.assert_not_called()
         self.send.assert_not_called()
+
+    def test_apple_version_oscillation_only_notifies_newer_releases(self):
+        store = RuleStore(self.apple_path)
+        store.update("App", {"version": None, "release_date": None})
+        for version, date in (
+            ("3.5.11", "2026-10-28T00:10:02Z"),
+            ("3.5.12", "2026-10-28T18:48:05Z"),
+            ("3.5.11", "2026-10-28T00:10:02Z"),
+            ("3.5.12", "2026-10-28T18:48:05Z"),
+            ("3.5.13", "2026-10-29T12:00:00+08:00"),
+            ("3.5.12", "2026-10-28T18:48:05Z"),
+            ("another-version", "2026-10-29T04:00:00Z"),
+            ("3.5.13", "2026-10-30T00:00:00Z"),
+        ):
+            self.apple.return_value = VersionInfo("App", version, release_date=parse_release_date(date))
+            self.assertEqual(run_monitors(self.specs[1:]), [])
+        self.assertEqual([call.args[0].title for call in self.send.call_args_list], [
+            "App - 3.5.11", "App - 3.5.12", "App - 3.5.13",
+        ])
+        self.assertEqual(store.load()["App"], {
+            "app_id": "123", "version": "3.5.13", "release_date": "2026-10-29T04:00:00+00:00",
+        })

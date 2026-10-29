@@ -3,7 +3,7 @@
 import re
 
 from clients.http import get_query_response
-from models import VersionInfo
+from models import VersionInfo, parse_release_date
 
 
 def fetch_app_version(app_id: str | int, country: str = "us", *, name: str) -> VersionInfo:
@@ -39,8 +39,13 @@ def fetch_app_version(app_id: str | int, country: str = "us", *, name: str) -> V
     url = app.get("trackViewUrl") or f"https://apps.apple.com/{country}/app/id{app_id}"
     if not isinstance(url, str):
         raise ValueError("Apple 查询接口 trackViewUrl 应为字符串")
+    try:
+        release_date = parse_release_date(app.get("currentVersionReleaseDate"))
+    except ValueError as error:
+        raise ValueError("Apple 查询接口缺少有效的 currentVersionReleaseDate 发布时间") from error
     return VersionInfo(
         name=name,
         version=version,
         url=url,
+        release_date=release_date,
     )

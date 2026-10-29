@@ -2,7 +2,8 @@
   "SenPlayer": {
     "app_id": "6443975850",
     "country": "us",
-    "version": "6.2.3",
+    "version": null,
+    "release_date": null,
     "disabled": false
   }
 }

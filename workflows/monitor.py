@@ -5,6 +5,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from models import VersionInfo, parse_release_date
 from notifications.updates import UpdateNotification, notify_update
 from workflows.rules import RuleStore
 from workflows.versions import DetectionStatus, UpdateInfo, detect_version
@@ -39,6 +40,7 @@ class MonitorSpec:
     accepts: Callable[[UpdateInfo, dict], bool]
     process: Callable[[UpdateInfo, dict], None]
     failures: FailurePolicy = FailurePolicy()
+    release_date_field: str | None = None
 
 
 class ProcessingError(RuntimeError):
@@ -96,16 +98,32 @@ def run_monitor(spec: MonitorSpec, *, targets: set[str] | None = None) -> list[d
             if previous is not None and (not isinstance(previous, str) or not previous.strip()):
                 raise ValueError(f"{spec.version_field} 应为非空字符串或 null")
             spec.validate(key, rule)
+            previous_release_date = None
+            if spec.release_date_field and previous is not None:
+                stored_date = rule.get(spec.release_date_field)
+                if stored_date is not None:
+                    previous_release_date = parse_release_date(stored_date)
 
             stage = "check"
             info = spec.fetch(key, rule)
+            release_state = {}
+            if spec.release_date_field and info is not None:
+                if not isinstance(info, VersionInfo) or info.release_date is None:
+                    raise ValueError("查询结果缺少有效的发布时间")
+                release_state[spec.release_date_field] = info.release_date.isoformat()
             status = detect_version(
-                info, previous, accepted=info is not None and spec.accepts(info, rule)
+                info, previous, accepted=info is not None and spec.accepts(info, rule),
+                previous_release_date=previous_release_date,
             )
             logger.info(
                 "%s %s 检测结果: %s（%s → %s）",
                 spec.name, key, status.value, previous, info.version if info else None,
             )
+            if status == DetectionStatus.STALE:
+                logger.info(
+                    "%s %s 跳过较早或同一时间发布的版本（记录: %s，查询: %s）",
+                    spec.name, key, previous_release_date, info.release_date,
+                )
             if status != DetectionStatus.CHANGED:
                 stage = "state"
                 store.update(key, remove=FAILURE_FIELDS)
@@ -117,7 +135,7 @@ def run_monitor(spec: MonitorSpec, *, targets: set[str] | None = None) -> list[d
             stage = "notification"
             notify_update(info, spec.notification)
             stage = "state"
-            store.update(key, {spec.version_field: info.version}, remove=FAILURE_FIELDS)
+            store.update(key, {spec.version_field: info.version, **release_state}, remove=FAILURE_FIELDS)
         except Exception as error:
             logger.exception("%s %s %s失败", spec.name, key, STAGE_LABELS[stage])
             failures.append(_failure(spec, stage, error, key, info))

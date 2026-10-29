@@ -3,7 +3,7 @@
 Update Monitor 通过同一套监控流程处理两个来源：
 
 - **GitHub Release**：检查最新 Release，使用 OpenAI 兼容模型筛选 asset，下载、按需移动文件，并创建 TickTick 待办。
-- **App Store**：通过 Apple 查询接口获取版本，与记录比较，变化时使用规则中的名称创建 TickTick 待办。
+- **App Store**：通过 Apple 查询接口获取版本与发布时间，版本变化且发布时间更新时，使用规则中的名称创建 TickTick 待办。
 
 两条业务线保留各自的规则文件与业务动作，共用查询后的版本检测、状态存储、失败补跑和通知模块。成功更新固定推送 TickTick，错误告警固定发送飞书，规则中不选择通知渠道。每轮先执行两条业务线，再补跑失败的仓库或应用一次，随后汇总仍需告警的错误、尝试生成 AI 错误报告，并通过飞书自定义机器人发送通知。
 
@@ -225,7 +225,8 @@ App Store 使用独立的 `apple_rules.json`，可复制 [apple_rules.example.js
   "SenPlayer": {
     "app_id": "6443975850",
     "country": "us",
-    "version": "6.2.3",
+    "version": null,
+    "release_date": null,
     "disabled": false
   }
 }
@@ -240,21 +241,24 @@ App Store 使用独立的 `apple_rules.json`，可复制 [apple_rules.example.js
 | `app_id` | string/number | 必填 | Apple 应用 ID，支持正整数或数字字符串 |
 | `country` | string | 可选 | App Store 两位地区代码，省略时为 `"us"`；`"cn"` 表示中国区 |
 | `version` | string/null | 可选，程序维护 | 最后完成处理的版本；省略或 `null` 时首次处理当前版本，TickTick 启用时须送达后更新 |
+| `release_date` | string/null | 可选，程序维护 | 最后完成处理的版本的发布时间，保存为含时区的 ISO 8601 字符串；初始值为 `null`，随版本处理成功后一起保存 |
 | `disabled` | boolean | 可选 | 省略时为 `false`；`true` 时跳过该项的查询、通知和版本更新 |
 
-填入上述 `version: "6.2.3"` 后，查询仍为 `6.2.3` 时跳过；查询变为其他版本时，通知标题为 `应用名称 - 版本号`，正文为 `Update Monitor - App Store` 和 App Store 链接。规则中填写的版本作为你的监控起点，示例值仅供参考。
+首次监控时，`version`、`release_date` 均设为 `null`，当前版本处理成功后同时保存。后续版本变化且发布时间晚于记录时，通知标题为 `应用名称 - 版本号`，正文为 `Update Monitor - App Store` 和 App Store 链接。发布时间取自 Apple 的 `currentVersionReleaseDate`，按时间先后比较；相同版本直接跳过，较早或相同时间发布的其他版本记为 `stale`，保留原版本和时间，仅记录本地日志。每个应用只维护最近一组版本与时间，存储量固定。
+
+需要预设监控起点时，同时填写版本与其准确发布时间。需要重新处理当前版本时，将 `version`、`release_date` 一起设为 `null`。响应中的发布时间缺失、格式异常或缺少时区时，保留状态并走查询失败告警。
 
 在 `.env` 中使用 `TODO_ENABLED=true` 启用成功通知并填写 TickTick 凭据，更新以当天的全天待办送达。使用 `FEISHU_ENABLED=true` 启用错误告警并填写飞书凭据。两者独立控制，不会因某个渠道关闭而改走另一渠道。
 
-TickTick 启用时，送达后更新该项的 `version`；投递失败保留原版本，供本轮补跑及后续轮次重试。关闭 TickTick 时不发送成功通知，仍保存查询到的版本，之后启用不会补发关闭期间已保存的版本。旧规则中的 `notify` 字段已停止使用，可以删除；保留该字段不影响运行，也不会把成功消息发到飞书。
+TickTick 启用时，送达后同时更新该项的 `version` 和 `release_date`；投递失败保留原版本与时间，供本轮补跑及后续轮次重试。关闭 TickTick 时跳过成功通知，仍按相同的时间判断保存版本和时间，之后启用时沿用已保存的状态。旧规则中的 `notify` 字段已停止使用，可以删除；保留该字段时沿用固定的通知路由。
 
 单个应用的配置、查询或通知失败后继续检查其他项。两条业务线首遍执行结束后，仅补跑失败项；补跑仍然失败的记录进入本轮汇总告警。`apple_rules.json` 缺失时跳过 App Store 业务线，空对象表示当前没有监控项。暂停某个应用时设置 `"disabled": true`，恢复时改为 `false` 或删除该字段。App Store 的该开关用于手动暂停，失败重试继续沿用原有流程。
 
 ## 公共监控流程与通知接口
 
-`clients/github.py` 和 `clients/app_store.py` 只负责来源接口查询和响应校验，分别返回 `ReleaseInfo`、`VersionInfo`，不接收历史版本、不判断是否更新。两种数据都提供 `name`、`version`、`url`，GitHub 另外保留仓库信息和 assets。
+`clients/github.py` 和 `clients/app_store.py` 负责来源接口查询和响应校验，分别返回 `ReleaseInfo`、`VersionInfo`。两种数据都提供 `name`、`version`、`url`，GitHub 另外保留仓库信息和 assets，App Store 另外提供经校验并统一到 UTC 的 `release_date`。
 
-`workflows/versions.py` 的 `detect_version()` 使用字符串相等判断版本变化，明确返回变化、未变、被筛选跳过或无可用版本四种结果，不发送通知。GitHub 的 `tag_contains` 条件由 GitHub 适配层提供，不进入客户端。
+`workflows/versions.py` 的 `detect_version()` 使用字符串相等判断版本变化，App Store 再按发布时间过滤旧响应，返回变化、未变、被筛选跳过、无可用版本或旧发布时间五种结果。GitHub 的 `tag_contains` 条件由 GitHub 适配层提供。公共流程在处理成功后原子保存版本与时间。
 
 `workflows/monitor.py` 按 `MonitorSpec` 执行公共流程，负责禁用判断、规则校验、检测、业务动作、通知和版本提交，并在全部业务线首遍执行后仅补跑失败项。`workflows/rules.py` 的 `RuleStore` 统一使用临时文件与原子替换保存规则。GitHub、Apple 适配层只声明查询、筛选、动作和策略。
 
@@ -408,9 +412,9 @@ tests/                    # 核心业务流程测试
 uv run --locked python -m unittest discover -s tests -v
 ```
 
-保留 5 个核心业务测试：两来源成功后保存版本且不重复通知、通知失败保留版本并可恢复且错误只发飞书、网络故障只补跑失败项、GitHub 三轮失败后禁用但 App Store 持续监控，以及 Tag 筛选跳过时不下载、不通知、不推进版本。外部查询和通知使用 mock，规则文件在临时目录中实际读写。
+保留 6 个核心业务测试：两来源成功后保存版本且去重、通知失败保留版本与时间并可恢复且错误只发飞书、网络故障只补跑失败项、GitHub 三轮失败后禁用且 App Store 持续监控、Tag 筛选跳过，以及 App Store 首次处理与版本来回切换时仅通知发布时间更新的版本。外部查询和通知使用 mock，规则文件在临时目录中实际读写。
 
-另有 2 个请求恢复测试，验证两来源查询在第三次请求恢复，以及持续网络故障叠加业务补跑后每来源每轮最多六次请求、版本保持不变。
+另有 3 个查询测试，验证两来源查询在第三次请求恢复、持续网络故障叠加业务补跑后每来源每轮最多六次请求且保留版本，以及 Apple 发布时间异常时保留状态并返回告警记录。
 
 ## 安全说明
 

@@ -16,6 +16,7 @@ def apple_monitor(path: Path | None = None) -> MonitorSpec:
         name="App Store",
         rules_file=path if path is not None else RULES_FILE,
         version_field="version",
+        release_date_field="release_date",
         fetch=lambda key, rule: fetch_app_version(
             rule.get("app_id"), rule.get("country", "us"), name=key
         ),

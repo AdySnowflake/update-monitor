@@ -20,7 +20,9 @@ class QueryRetryTests(unittest.TestCase):
     def test_both_queries_recover_on_third_attempt_with_three_second_timeouts(self):
         for fetch, payload in (
             (lambda: fetch_latest_release("owner", "repo"), {"tag_name": "2", "assets": []}),
-            (lambda: fetch_app_version("123", name="App"), {"results": [{"trackId": 123, "version": "2"}]}),
+            (lambda: fetch_app_version("123", name="App"), {"results": [{
+                "trackId": 123, "version": "2", "currentVersionReleaseDate": "2026-10-28T00:00:00Z",
+            }]}),
         ):
             with self.subTest(payload=payload):
                 response = MagicMock(status_code=200)
@@ -65,3 +67,29 @@ class QueryRetryTests(unittest.TestCase):
             self.assertEqual(github_rule["last_tag"], "1")
             self.assertEqual(github_rule["consecutive_failures"], 1)
             self.assertEqual(RuleStore(apple_path).load()["App"]["version"], "1")
+
+    def test_invalid_apple_release_dates_preserve_state_and_report_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "apple_rules.json"
+            original = {"App": {
+                "app_id": "123", "version": "1", "release_date": "2026-10-27T00:00:00Z",
+            }}
+            for date in (None, "invalid", "2026-10-28T00:00:00"):
+                with self.subTest(date=date):
+                    path.write_text(json.dumps(original))
+                    response = MagicMock(status_code=200)
+                    response.__enter__.return_value = response
+                    response.json.return_value = {"results": [{
+                        "trackId": 123, "version": "2", "currentVersionReleaseDate": date,
+                    }]}
+                    with (
+                        patch("clients.http.requests.get", return_value=response) as get,
+                        patch("workflows.monitor.notify_update") as notify,
+                        self.assertLogs("workflows.monitor", level="ERROR"),
+                    ):
+                        failures = run_monitors([apple_monitor(path)])
+                    self.assertEqual(len(failures), 1)
+                    self.assertEqual(failures[0]["stage"], "check")
+                    self.assertEqual(get.call_count, 2)  # 内容校验失败仅走业务补跑。
+                    self.assertEqual(RuleStore(path).load(), original)
+                    notify.assert_not_called()
