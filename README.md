@@ -389,8 +389,10 @@ TickTick 关闭时不参与成功判定；启用后投递失败会阻止版本�
 ```cron
 PATH=/home/your-user/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-*/30 * * * * cd /path/to/update-monitor && flock -n /tmp/update-monitor.lock uv run --locked python main.py >> /path/to/update-monitor/logs/cron.log 2>&1
+*/30 * * * * cd /path/to/update-monitor && flock -n /tmp/update-monitor.lock uv run --locked python main.py
 ```
+
+运行日志由程序写入 `logs/pipeline_*.log`。cron 命令省略日志文件重定向，控制台输出交由 cron 默认机制处理。
 
 通过 SSH 部署时，远程命令的 `uv` 路径确认、cron 环境和运行锁要求见 [AGENTS.md 的服务器部署说明](AGENTS.md#服务器部署)。
 
